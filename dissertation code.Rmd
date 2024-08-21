@@ -1,0 +1,3635 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r}
+install.packages("spatstat")
+```
+
+```{r}
+install.packages("tidyverse")
+install.packages("sf")
+install.packages("tmap")
+install.packages("janitor")
+install.packages("magrittr")
+install.packages("sp")
+install.packages("RColorBrewer")
+install.packages("tmaptools")
+install.packages("spdep")
+install.packages("ggplot2")
+install.packages("units")
+install.packages("igraph")
+install.packages("sfheaders")
+install.packages("ineq")
+install.packages("stats")
+install.packages("dplyr")
+```
+
+```{r}
+library(spatstat)
+library(tidyverse)
+library(sf)
+library(tmap)
+library(janitor)
+library(magrittr)
+library(sp)
+library(RColorBrewer)
+library(tmaptools)
+library(spdep)
+library(ggplot2)
+library(units)
+library(igraph)
+library(sfheaders)
+library(ineq)
+library(stats)
+library(dplyr)
+```
+
+```{r}
+library(stats)
+```
+
+
+# road network
+## data preprocessing
+uk road network
+```{r}
+road_uk2 <- st_read("D:/Dissertation/data/london_road/road_around_london.shp")
+```
+
+London Boundary
+```{r}
+london_boundary <- st_read("D:/Dissertation/data/london_road/london_boundary.shp")
+```
+
+```{r}
+# Extend the boundary line outwards by 3km in its entirety
+buffer_distance <- 3000  
+london_boundary_buffered <- st_buffer(london_boundary, dist = buffer_distance)
+```
+
+```{r}
+export_file <- "D:/Dissertation/data/london_boundary_buffered"
+
+# st_write 
+st_write(london_boundary_buffered, export_file, driver = "ESRI Shapefile")
+```
+
+
+```{r}
+london_road2<- st_intersection(road_uk2, london_boundary_buffered)
+```
+
+Road network as a whole beyond the boundary
+```{r}
+london_road2_nobuffered<- st_intersection(road_london2, london_boundary)
+```
+
+
+
+```{r}
+export_file <- "D:/Dissertation/data/london_road2_buffered"
+
+st_write(london_road2, export_file, driver = "ESRI Shapefile")
+```
+
+```{r}
+road_london2 <- st_read("D:/Dissertation/data/london_road2_buffered/london_road2_buffered.shp")
+```
+
+```{r}
+ggplot() +
+  
+  geom_sf(data = road_london2, aes(color = class)) +
+  
+  geom_sf(data = london_boundary, fill = NA, color = "black", size = 6) +
+  
+  geom_sf(data = london_boundary_buffered, fill = NA, color = "grey70", linetype = "dotted", size = 6) +
+
+  
+  theme_minimal() +
+  
+  labs(title = "Roads in Great London with Extended Areas",
+       color = "Road Type")
+```
+
+```{r}
+unique_classes <- unique(road_london2$class)
+print(unique_classes)
+```
+
+
+
+
+```{r}
+
+ggplot() +
+
+  geom_sf(data = london_boundary, aes(color = "London Boundary"), fill = NA) +
+  
+  geom_sf(data = london_boundary_buffered, aes(color = "Extended Boundary"), fill = NA) +
+  
+  scale_color_manual(name = "Boundary Type",
+                     values = c("London Boundary" = "black",
+                                "Extended Boundary" = "blue")) +
+ 
+  theme_minimal() +
+ 
+  labs(title = "London Boundary and Extended Boundary")
+```
+
+```{r}
+# Select the class of road required
+selected_roads <- road_london2[road_london2$class %in% c("B Road", "Motorway", "A Road", "Classified Unnumbered"), ]
+
+
+ggplot() +
+ 
+  geom_sf(data = london_boundary, fill = NA, color = "black") +
+  
+  geom_sf(data = selected_roads, color = "blue", size = 0.5) +
+  
+  theme_minimal() +
+  labs(title = "Macro Road Network")
+```
+
+```{r}
+
+selected_roads2 <- road_london2[road_london2$class %in% c("Unclassified", "Not Classified", "Unknown"), ]
+
+
+ggplot() +
+ 
+  geom_sf(data = london_boundary, fill = NA, color = "black") +
+  
+  geom_sf(data = selected_roads2, color = "blue", size = 0.5) +
+  
+  theme_minimal() +
+  labs(title = "Micro Road Network")
+```
+
+
+
+## entire road 
+The overall road network is transformed into a NETWORK
+```{r}
+# Convert geometric data to line segments
+road_lines_all_road <- st_cast(road_london2 , "LINESTRING")
+```
+
+```{r}
+# Extract the start and end points of each line segment
+endpoints_all_road <- st_geometry(road_lines_all_road) %>%
+  st_coordinates() %>%
+  as.data.frame() %>%
+  group_by(L1) %>%
+  summarise(start_x = first(X),
+            start_y = first(Y),
+            end_x = last(X),
+            end_y = last(Y))
+```
+
+```{r}
+# Combining start and end points into one data frame
+nodes_all_road <- endpoints_all_road %>%
+  select(start_x, start_y) %>%
+  rename(x = start_x, y = start_y) %>%
+  bind_rows(endpoints_all_road %>%
+              select(end_x, end_y) %>%
+              rename(x = end_x, y = end_y)) %>%
+  distinct() %>%
+  rowid_to_column("node_id")
+```
+
+```{r}
+# edge list
+edges_all_road <- endpoints_all_road %>%
+  left_join(nodes_all_road, by = c("start_x" = "x", "start_y" = "y")) %>%
+  rename(start_node = node_id) %>%
+  left_join(nodes_all_road, by = c("end_x" = "x", "end_y" = "y")) %>%
+  rename(end_node = node_id) %>%
+  select(start_node, end_node)
+```
+
+```{r}
+edges_all_road <- edges_all_road %>%
+  mutate(edge_id = row_number())
+```
+
+```{r}
+# Building Network Diagram Objects
+graph_all_road <- graph_from_data_frame(d = edges_all_road, vertices = nodes_all_road, directed = FALSE)
+
+
+print(graph_all_road)
+```
+
+```{r}
+# Check for the presence of the weight side attribute
+if (is.null(E(graph_all_road)$weight)) {
+  print("Graph does not have weight edge attribute.")
+} else {
+  print("Graph has weight edge attribute.")
+}
+```
+
+Overall road network calculation node closeness centrality
+```{r}
+# closeness centrality
+closeness_centrality_all_road <- closeness(graph_all_road, mode = "all", normalized = FALSE, weights = NA)
+```
+
+```{r}
+centrality_df_all_road <- data.frame(
+  node_id = nodes_all_road$node_id,
+  closeness_centrality_all_road = closeness_centrality_all_road
+)
+```
+
+```{r}
+write.csv(centrality_df_all_road, "D:/Dissertation/data/london_road/node_centrality2_buffered_all_road.csv", row.names = FALSE)
+```
+
+```{r}
+centrality_all_road <- read.csv("D:/Dissertation/data/london_road/node_centrality2_buffered_all_road.csv")
+```
+
+Creation of an 800-metre grid
+```{r}
+grid_size <- 800 
+
+city_grid <- st_make_grid(london_boundary, cellsize = grid_size, square = TRUE)
+
+
+city_grid <- st_sf(geometry = city_grid) %>%
+  st_intersection(london_boundary) %>%
+  mutate(grid_id = row_number())
+```
+
+```{r}
+ggplot() +
+  geom_sf(data = london_boundary, fill = NA, color = "black", size = 0.5) +
+  geom_sf(data = city_grid, fill = NA, alpha = 0.6) +
+  labs(title = "Grid ") +
+  theme_minimal()
+```
+
+
+
+
+Assign the road network to each grid, and the complete road network interrupted by the grid boundaries belongs to the grid, e.g., if road A is partly in grid1 and partly in grid2, then both grid1 and grid2 contain the whole of road A, as well as the node at the end of road A. Make a table that counts which nodes and edges each grid contains
+
+transform to sf
+```{r}
+nodes_all_road_sf <- st_as_sf(nodes_all_road, coords = c("x", "y"), crs = 27700)
+```
+
+
+```{r}
+# Merge the coordinates of nodes_all_road into edges_all_road
+edges_all_road_with_coords <- edges_all_road %>%
+  left_join(nodes_all_road, by = c("start_node" = "node_id")) %>%
+  rename(start_x = x, start_y = y) %>%
+  left_join(nodes_all_road, by = c("end_node" = "node_id")) %>%
+  rename(end_x = x, end_y = y)
+```
+
+aggregate nodes to grid
+```{r}
+nodes_all_road_in_grids <- st_join(nodes_all_road_sf, city_grid, left = FALSE)
+```
+
+```{r}
+each_grid <- nodes_all_road_in_grids %>%
+  group_by(grid_id) %>%
+  summarise(node_ids = toString(node_id))
+```
+
+
+
+Assign edges to grids based on node ids
+```{r}
+edges_all_road <- edges_all_road %>%
+  left_join(nodes_all_road_in_grids, by = c("start_node" = "node_id")) %>%
+  select(edge_id, start_node, end_node, grid_id1 = grid_id)
+```
+
+
+```{r}
+edges_all_road <- edges_all_road %>%
+  left_join(nodes_all_road_in_grids, by = c("end_node" = "node_id")) %>%
+  select(edge_id, start_node, end_node, grid_id1, grid_id2 = grid_id)
+```
+
+```{r}
+# Aggregate the edge_id list for each grid in grid1
+grid1_edges <- edges_all_road %>%
+  group_by(grid_id1) %>%
+  summarize(edge_ids = list(edge_id)) %>%
+  rename(grid_id = grid_id1)
+```
+
+```{r}
+# Aggregate the edge_id list for each grid in grid2
+grid2_edges <- edges_all_road %>%
+  group_by(grid_id2) %>%
+  summarize(edge_ids = list(edge_id)) %>%
+  rename(grid_id = grid_id2)
+```
+
+```{r}
+# Merge two data frames and remove duplicates
+combined_edges <- bind_rows(grid1_edges, grid2_edges) %>%
+  unnest(edge_ids) %>%
+  group_by(grid_id) %>%
+  summarize(edge_ids = list(unique(edge_ids)))
+```
+
+```{r}
+# Merge nodes and edges into grid
+each_grid <- each_grid %>%
+  left_join(combined_edges, by = "grid_id")
+```
+
+```{r}
+str(each_grid)
+```
+
+Adding geometric information to the edges
+```{r}
+edges_all_road_with_coords <- edges_all_road_with_coords %>%
+  mutate(geometry = st_as_sfc(paste0("LINESTRING(", start_x, " ", start_y, ", ", end_x, " ", end_y, ")"), crs = 27700))
+```
+
+```{r}
+edges_all_road_with_coords_sf <- st_as_sf(edges_all_road_with_coords)
+```
+
+
+
+
+```{r}
+
+ggplot() +
+  geom_sf(data = road_lines_all_road) +
+  theme_minimal()
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = edges_all_road_with_coords_sf) +
+  theme_minimal()
+```
+
+Calculate the curvature of all roads
+```{r}
+# Calculate the curvature of all roads
+calculate_curvature <- function(linestring) {
+  coords <- st_coordinates(linestring)
+  n <- nrow(coords)
+  
+  if (n < 3) {
+    return(0)  # If there are less than 3 points on the line segment, the curvature is 0
+  }
+  
+  total_curvature <- 0
+  segment_lengths <- 0
+  
+  for (i in 2:(n-1)) {
+    # Calculate the angle formed by the three points
+    x1 <- coords[i-1, 1]
+    y1 <- coords[i-1, 2]
+    x2 <- coords[i, 1]
+    y2 <- coords[i, 2]
+    x3 <- coords[i+1, 1]
+    y3 <- coords[i+1, 2]
+    
+    # Calculate side length
+    a <- sqrt((x2 - x1)^2 + (y2 - y1)^2)
+    b <- sqrt((x3 - x2)^2 + (y3 - y2)^2)
+    c <- sqrt((x3 - x1)^2 + (y3 - y1)^2)
+    
+    # cos_theta
+    cos_theta <- (a^2 + b^2 - c^2) / (2 * a * b)
+    
+    # Prevents numerical errors from exceeding the range [-1, 1].
+    cos_theta <- min(1, max(-1, cos_theta))
+    
+    # Calculate angle and convert to radians
+    theta <- acos(cos_theta)
+    
+    # 计算局部曲率
+    local_curvature <- theta / a  # Here a denotes an approximation of the arc length
+    
+    # Weighted accumulation of local curvature
+    segment_length <- a
+    total_curvature <- total_curvature + local_curvature * segment_length
+    segment_lengths <- segment_lengths + segment_length
+  }
+  
+  # Calculate the mean curvature
+  average_curvature <- total_curvature / segment_lengths
+  
+  return(average_curvature)
+}
+
+
+road_lines_all_road <- road_lines_all_road %>%
+  mutate(curvature = purrr::map_dbl(geometry, calculate_curvature))
+```
+
+
+
+```{r}
+print(st_as_text(road_lines_all_road$geometry[1]))
+```
+
+
+```{r}
+road_lines_all_road <- road_lines_all_road %>%
+  mutate(road_id = row_number())
+```
+
+Geometric information for all edges
+```{r}
+
+edges_all_road_with_coords2 <- edges_all_road_with_coords %>%
+  left_join(road_lines_all_road[, c("road_id", "length", "curvature")],
+            by = c("edge_id" = "road_id"))
+```
+
+```{r}
+edges_all_road_with_coords2 <- edges_all_road_with_coords %>%
+  left_join(road_lines_all_road[, c("road_id", "length", "curvature")],
+            by = c("edge_id" = "road_id")) %>%
+  
+  select(-geometry.x, -geometry.y)
+```
+
+
+```{r}
+
+export_file <- "D:/Dissertation/data/edges_all_road_geometry.csv"
+
+
+write.csv(edges_all_road_with_coords2, export_file, row.names = FALSE)
+```
+
+```{r}
+
+file_path <- "D:/Dissertation/数据/edges_all_road_geometry.csv"
+
+
+edges_all_road_geometry <- read.csv(file_path)
+```
+
+Centrality assignment to all nodes
+```{r}
+
+nodes_all_road_in_grids_centrality <- merge(nodes_all_road_in_grids, 
+                   centrality_all_road[, c("node_id", "closeness_centrality_all_road")], 
+                   by = "node_id", 
+                   all.x = TRUE)
+```
+
+```{r}
+nodes_all_road_in_grids_centrality_df <- st_drop_geometry(nodes_all_road_in_grids_centrality)
+```
+
+```{r}
+export_file <- "D:/Dissertation/data/nodes_all_road_in_grids_centrality_df.csv"
+
+
+write.csv(nodes_all_road_in_grids_centrality_df, export_file, row.names = FALSE)
+```
+
+```{r}
+
+file_path <- "D:/Dissertation/数据/nodes_all_road_in_grids_centrality_df.csv"
+
+
+nodes_all_road_in_grids_centrality_df <- read.csv(file_path)
+```
+
+Read attribute information for nodes and edges
+```{r}
+
+file_path <- "D:/Dissertation/data/nodes_all_road_in_grids_attribute.csv"
+
+
+nodes_all_road_in_grids_attribute <- read.csv(file_path)
+```
+
+Maximum centrality in each grid
+```{r}
+# Grouping and filtering with the dplyr package
+result_max_closeness_centrality_all_road <- nodes_all_road_in_grids_attribute %>%
+  group_by(grid_id) %>%
+  summarise(
+    nodes = list(node_id),  # List all node_ids in each grid_id
+    max_closeness_centrality_node_all_road = node_id[which.max(closeness_centrality_all_road)],  # Find the node with the largest closeness_centrality_all_road
+    max_closeness_centrality_all_road = max(closeness_centrality_all_road)  # Find the value of maximum closeness_centrality_all_road
+  )
+```
+
+```{r}
+result_max_closeness_centrality_all_road <- result_max_closeness_centrality_all_road %>%
+  select(-nodes)
+```
+
+```{r}
+
+export_file <- "D:/Dissertation/data/result_max_closeness_centrality_all_road.csv"
+
+write.csv(result_max_closeness_centrality_all_road, export_file, row.names = FALSE)
+```
+
+```{r}
+
+file_path <- "D:/Dissertation/data/result_max_closeness_centrality_all_road.csv"
+
+
+result_max_closeness_centrality_all_road <- read.csv(file_path)
+```
+
+```{r}
+
+file_path <- "D:/Dissertation/data/nodes_all_road_in_grids_centrality_df.csv"
+
+nodes_all_road_in_grids_centrality_df <- read.csv(file_path)
+```
+
+## Macro
+
+Extracting the main road
+```{r}
+road_london2_filtered_level1 <- road_london2 %>%
+  filter(class %in% c("A Road", "B Road", "Classified Unnumbered", "Motorway"))
+```
+
+```{r}
+
+export_file <- "D:/Dissertation/data/london_road2_level1"
+
+
+st_write(road_london2_filtered_level1, export_file, driver = "ESRI Shapefile")
+```
+
+```{r}
+london_road2_level1 <- st_read("D:/Dissertation/data/london_road2_level1/london_road2_level1.shp")
+```
+
+to network
+```{r}
+road_lines_level1 <- st_cast(london_road2_level1 , "LINESTRING")
+```
+
+```{r}
+
+endpoints_level1 <- st_geometry(road_lines_level1) %>%
+  st_coordinates() %>%
+  as.data.frame() %>%
+  group_by(L1) %>%
+  summarise(start_x = first(X),
+            start_y = first(Y),
+            end_x = last(X),
+            end_y = last(Y))
+```
+
+
+```{r}
+
+nodes_level1 <- endpoints_level1 %>%
+  select(start_x, start_y) %>%
+  rename(x = start_x, y = start_y) %>%
+  bind_rows(endpoints_level1 %>%
+              select(end_x, end_y) %>%
+              rename(x = end_x, y = end_y)) %>%
+  distinct() %>%
+  rowid_to_column("node_id_1")
+```
+
+```{r}
+
+nodes_level1 <- nodes_level1 %>%
+  mutate(node_id_level1 = nodes_all_road$node_id[match(paste(x, y), paste(nodes_all_road$x, nodes_all_road$y))])
+```
+
+```{r}
+
+edges_level1 <- endpoints_level1 %>%
+  left_join(nodes_level1, by = c("start_x" = "x", "start_y" = "y")) %>%
+  rename(start_node_level1 = node_id_level1) %>%
+  left_join(nodes_level1, by = c("end_x" = "x", "end_y" = "y")) %>%
+  rename(end_node_level1 = node_id_level1) %>%
+  select(start_node_level1, end_node_level1)
+```
+
+```{r}
+
+edges_level1 <- edges_level1 %>%
+  mutate(edge_id_level1 = edges_all_road$edge_id[match(paste(start_node_level1, end_node_level1), paste(edges_all_road$start_node, edges_all_road$end_node))])
+```
+
+```{r}
+
+nodes_level1 <- nodes_level1 %>%
+  select(node_id_level1, x, y, node_id_1)
+```
+
+```{r}
+
+graph_level1 <- graph_from_data_frame(
+  d = edges_level1,
+  vertices = nodes_level1,
+  directed = FALSE
+)
+
+```
+
+```{r}
+if (is.null(E(graph_level1)$weight)) {
+  print("Graph does not have weight edge attribute.")
+} else {
+  print("Graph has weight edge attribute.")
+}
+```
+
+Node closeness centrality
+
+```{r}
+closeness_centrality_level1 <- closeness(graph_level1, mode = "all", normalized = FALSE, weights = NA)
+```
+
+```{r}
+ccentrality_df_level1 <- data.frame(
+  node_id_level1 = nodes_level1$node_id_level1,
+  closeness_centrality_level1 = closeness_centrality_level1
+)
+```
+
+```{r}
+
+write.csv(ccentrality_df_level1, "D:/Dissertation/data/london_road/node_centrality2_buffered_level1.csv", row.names = FALSE)
+```
+
+Edge betweenness centrality
+```{r}
+
+betweenness_centrality_level1 <- edge_betweenness(graph_level1, e = E(graph_level1),directed = FALSE, weights = NULL, cutoff = -1)
+```
+
+```{r}
+
+bcentrality_df_level1 <- data.frame(
+  edge_id_level1 = edges_level1$edge_id_level1,
+  betweenness_centrality_level1 = betweenness_centrality_level1
+)
+```
+
+```{r}
+
+write.csv(bcentrality_df_level1, "D:/Dissertation/data/london_road/edge_centrality2_buffered_level1.csv", row.names = FALSE)
+```
+
+
+```{r}
+
+file_path <- "D:/Dissertation/data/london_road/node_centrality2_buffered_level1.csv"
+
+
+node_centrality_level1 <- read.csv(file_path)
+```
+
+```{r}
+
+file_path <- "D:/Dissertation/data/london_road/edge_centrality2_buffered_level1.csv"
+
+edge_bcentrality_level1 <- read.csv(file_path)
+```
+
+```{r}
+nodes_level1_sf <- nodes_level1 %>%
+  st_as_sf(coords = c("x", "y"), crs = 27700) 
+```
+
+```{r}
+# Merge data and merge based on node_id_level1
+nodes_level1_sf <- nodes_level1_sf %>%
+  left_join(node_centrality_level1, by = "node_id_level1")
+```
+
+```{r}
+# rank
+nodes_level1_sf <- nodes_level1_sf %>%
+  mutate(closeness_centrality_rank = row_number(closeness_centrality_level1))
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = nodes_level1_sf, aes(color = closeness_centrality_rank)) +
+  scale_color_viridis_c(option = "viridis") +  
+  theme_minimal() +
+  labs(
+    title = "Road Network with Closeness Centrality",
+    color = "Closeness Centrality", 
+  ) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+```{r}
+# Merge dataframe, based on edge_id with edge_id_level1
+edge_level1_with_coords <- edges_level1 %>%
+  left_join(edges_all_road_with_coords, by = c("edge_id_level1" = "edge_id"))
+```
+
+```{r}
+
+edges_level1_sf <- edge_level1_with_coords %>%
+  rowwise() %>%
+  mutate(geometry = st_sfc(st_linestring(matrix(c(start_x, start_y, end_x, end_y), ncol = 2, byrow = TRUE)))) %>%
+  ungroup()
+
+edges_level1_sf <- st_as_sf(edges_level1_sf, crs = 27700)  
+```
+
+```{r}
+
+edges_level1_sf <- edges_level1_sf %>%
+  left_join(edge_bcentrality_level1, by = "edge_id_level1")
+```
+
+```{r}
+# rank
+edges_level1_sf <- edges_level1_sf %>%
+  mutate(betweenness_centrality_rank = row_number(betweenness_centrality_level1))
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = edges_level1_sf, aes(color = betweenness_centrality_rank)) +
+  scale_color_viridis_c(option = "viridis") +  
+  theme_minimal() +
+  labs(
+    title = "Road Network with Betweenness Centrality",
+    color = "Betweenness Centrality"
+  ) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+
+
+
+Linked to all road network data
+```{r}
+# Merging two data frames
+df_merged_node <- merge(nodes_all_road_in_grids_centrality_df, 
+                   node_centrality_level1, 
+                   by.x = "node_id", 
+                   by.y = "node_id_level1", 
+                   all.x = TRUE)
+
+
+nodes_all_road_in_grids_df <- df_merged_node
+```
+
+```{r}
+
+df_merged_edge <- merge(edges_all_road_geometry, 
+                   edge_bcentrality_level1, 
+                   by.x = "edge_id", 
+                   by.y = "edge_id_level1", 
+                   all.x = TRUE)
+
+
+edges_all_road_in_grids_df <- df_merged_edge
+```
+
+keep level1node
+```{r}
+# Delete NA 
+nodes_level1_in_grids_attribute <- nodes_all_road_in_grids_attribute %>%
+  filter(!is.na(closeness_centrality_level1))
+```
+
+```{r}
+
+write.csv(nodes_level1_in_grids_attribute, "D:/Dissertation/data/nodes_level1_in_grids_attribute.csv", row.names = FALSE)
+```
+
+Read the attribute information of the node
+```{r}
+
+file_path <- "D:/Dissertation/data/nodes_level1_in_grids_attribute.csv"
+
+
+nodes_level1_in_grids_attribute <- read.csv(file_path)
+```
+
+Calculate the Gini coefficient of node centrality and the number of nodes in the grid
+```{r}
+
+gini_coefficient <- function(x) {
+  if(length(x) <= 1) return(NA) 
+  return(Gini(x))
+}
+
+# Group by grid_id, list the nodes in each grid and calculate the Gini coefficient and the number of nodes.
+result_gini_closeness_centrality_level1 <- nodes_level1_in_grids_attribute %>%
+  group_by(grid_id) %>%
+  summarise(
+    nodes = list(node_id),  
+    gini_coefficient_closeness = gini_coefficient(closeness_centrality_level1),  
+    node_num = n()  
+  )
+```
+
+```{r}
+
+values <- c(6.99038095618905E-08, 7.00258339306537E-08, 6.99642839326952E-08, 7.00897765930425E-08)
+
+
+gini_coefficient <- Gini(values)
+
+
+print(gini_coefficient)
+```
+
+Read attribute information for all edges
+```{r}
+
+file_path <- "D:/Dissertation/data/edges_all_road_in_grids_attribute.csv"
+
+
+edges_all_road_in_grids_attribute <- read.csv(file_path)
+```
+
+Keep level1edge
+```{r}
+# Delete NA
+edges_level1_in_grids_attribute <- edges_all_road_in_grids_attribute %>%
+  filter(!is.na(betweenness_centrality_level1))
+```
+
+Retain edges in the grid
+```{r}
+
+edges_level1_in_grids_attribute <- edges_level1_in_grids_attribute %>%
+  filter(!(is.na(grid_id1) & is.na(grid_id2)))
+```
+
+```{r}
+
+write.csv(edges_level1_in_grids_attribute, "D:/Dissertation/data/edges_level1_in_grids_attribute.csv", row.names = FALSE)
+```
+
+```{r}
+
+file_path <- "D:/Dissertation/data/edges_level1_in_grids_attribute.csv"
+
+edges_level1_in_grids_attribute <- read.csv(file_path)
+```
+
+Calculate the Gini coefficient and number of edges for each grid
+```{r}
+
+gini_coefficient <- function(x) {
+  if(length(x) <= 1) return(NA) 
+  return(Gini(x))
+}
+
+# Convert the edges data frame to long format so that each edge appears in the grid corresponding to grid_id1 and grid_id2.
+edges_long_level1 <- edges_level1_in_grids_attribute %>%
+  select(edge_id, grid_id1, betweenness_centrality_level1) %>%
+  rename(grid_id = grid_id1) %>%
+  bind_rows(
+    edges_level1_in_grids_attribute %>%
+      select(edge_id, grid_id2, betweenness_centrality_level1) %>%
+      rename(grid_id = grid_id2)
+  ) %>%
+  distinct(edge_id, grid_id, .keep_all = TRUE)  
+
+result_gini_betweenness_centrality_level1 <- edges_long_level1 %>%
+  group_by(grid_id) %>%
+  summarise(
+    edges = list(unique(edge_id)),  
+    num_edges = n(),  
+    gini_coefficient_betweenness = gini_coefficient(betweenness_centrality_level1)  
+  )
+```
+
+```{r}
+
+values <- c(527822.220908993, 521636.574645949)
+
+
+gini_coefficient <- Gini(values)
+
+
+print(gini_coefficient)
+```
+
+Geometric properties calculated for the first 10 per cent, 20 per cent, 30 per cent, 40 per cent, 50 per cent, 60 per cent, 70 per cent, 80 per cent, 90 per cent, 100 per cent
+```{r}
+# Sort by length in descending order
+df_sorted_level1_length <- edges_level1_in_grids_attribute %>%
+  arrange(desc(length))
+
+
+total_rows <- nrow(df_sorted_level1_length)
+
+percentiles <- c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+
+result_geometry_rank_level1_length <- data.frame(
+  percentile = numeric(length(percentiles)),
+  length_value = numeric(length(percentiles)))
+
+
+for (i in 1:length(percentiles)) {
+  percentile <- percentiles[i]
+  
+  
+  position <- ceiling((percentile / 100) * total_rows)
+  
+  
+  selected_data <- df_sorted_level1_length %>%
+    slice(position)
+  
+  
+  result_geometry_rank_level1_length[i, "percentile"] <- percentile
+  result_geometry_rank_level1_length[i, "length_value"] <- selected_data$length
+}
+
+
+print(result_geometry_rank_level1_length)
+```
+
+```{r}
+
+count_length_156 <- sum(edges_level1_in_grids_attribute$length >= 156)
+
+
+cat("Number of values where length >= 156:", count_length_156, "\n")
+```
+
+```{r}
+
+write.csv(result_geometry_rank_level1_length, "D:/Dissertation/data/result_geometry_rank_level1_length.csv", row.names = FALSE)
+```
+
+```{r}
+# Descending order by curvature
+df_sorted_level1_curvature <- edges_level1_in_grids_attribute %>%
+  arrange(desc(curvature))
+
+total_rows <- nrow(df_sorted_level1_curvature)
+
+
+percentiles <- c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+
+
+result_geometry_rank_level1_curvature <- data.frame(
+  percentile = numeric(length(percentiles)),
+  curvature_value = numeric(length(percentiles)))
+
+
+for (i in 1:length(percentiles)) {
+  percentile <- percentiles[i]
+  
+
+  position <- ceiling((percentile / 100) * total_rows)
+  
+  
+  selected_data <- df_sorted_level1_curvature %>%
+    slice(position)
+  
+ 
+  result_geometry_rank_level1_curvature[i, "percentile"] <- percentile
+  result_geometry_rank_level1_curvature[i, "curvature_value"] <- selected_data$curvature
+}
+
+
+print(result_geometry_rank_level1_curvature)
+```
+
+```{r}
+
+count_curvature_0.5502635 <- sum(edges_level1_in_grids_attribute$curvature >= 0.5502635)
+
+
+cat("Number of values where curvature >= 0.5502635:", count_curvature_0.5502635, "\n")
+```
+
+```{r}
+write.csv(result_geometry_rank_level1_curvature, "D:/Dissertation/data/result_geometry_rank_level1_curvature.csv", row.names = FALSE)
+```
+
+First 10 per cent, 20 per cent, 30 per cent, 40 per cent, 50 per cent, 60 per cent, 70 per cent, 80 per cent, 90 per cent, 100 per cent length
+```{r}
+
+edges_long_level1_length <- edges_level1_in_grids_attribute %>%
+  select(edge_id, grid_id1, grid_id2, length) %>%
+  rename(grid_id = grid_id1) %>%
+  bind_rows(
+    edges_level1_in_grids_attribute %>%
+      select(edge_id, grid_id1, grid_id2, length) %>%
+      rename(grid_id = grid_id2)
+  )
+```
+
+```{r}
+# Remove duplicate rows based on edge_id and grid_id and keep the first row of each combination.
+edges_long_level1_length_unique <- edges_long_level1_length %>%
+  distinct(edge_id, grid_id, .keep_all = TRUE)
+```
+
+
+```{r}
+length_values <- c(156, 106, 81, 66, 54, 43, 34, 24, 14, 1)
+
+# Grouped by grid_id, count the number of edges in each grid_id with length greater than or equal to the respective thresholds
+result_level1_length <- edges_long_level1_length_unique %>%
+  group_by(grid_id) %>%
+  summarise(
+    edges_156 = sum(length >= 156),
+    edges_106 = sum(length >= 106 & length < 156),
+    edges_81 = sum(length >= 81 & length < 106),
+    edges_66 = sum(length >= 66 & length < 81),
+    edges_54 = sum(length >= 54 & length < 66),
+    edges_43 = sum(length >= 43 & length < 54),
+    edges_34 = sum(length >= 34 & length < 43),
+    edges_24 = sum(length >= 24 & length < 34),
+    edges_14 = sum(length >= 14 & length < 24),
+    edges_1 = sum(length >= 1 & length < 14)
+  )
+```
+
+```{r}
+write.csv(result_level1_length, "D:/Dissertation/data/result_level1_length.csv", row.names = FALSE)
+```
+
+First 10%, 20%, 30%, 40%, 50%, 60%, 70%, 80%, 90%, 100% curvature
+```{r}
+edges_long_level1_curvature <- edges_level1_in_grids_attribute %>%
+  select(edge_id, grid_id1, grid_id2, curvature) %>%
+  rename(grid_id = grid_id1) %>%
+  bind_rows(
+    edges_level1_in_grids_attribute %>%
+      select(edge_id, grid_id1, grid_id2, curvature) %>%
+      rename(grid_id = grid_id2)
+  )
+```
+
+```{r}
+edges_long_level1_curvature_unique <- edges_long_level1_curvature %>%
+  distinct(edge_id, grid_id, .keep_all = TRUE)
+```
+
+```{r}
+curvature_values <- c(0.5502635, 0.3779580, 0.2952338, 0.2411086, 0.1976738, 0.1631219, 0.1318891, 0.1023751	, 0.0728637, 0.0000000	)
+
+result_level1_curvature <- edges_long_level1_curvature_unique %>%
+  group_by(grid_id) %>%
+  summarise(
+    edges_0.55 = sum(curvature >= 0.5502635),
+    edges_0.37 = sum(curvature >= 0.3779580 & curvature < 0.5502635),
+    edges_0.29 = sum(curvature >= 0.2952338 & curvature < 0.3779580),
+    edges_0.24 = sum(curvature >= 0.2411086 & curvature < 0.2952338),
+    edges_0.19 = sum(curvature >= 0.1976738 & curvature < 0.2411086),
+    edges_0.16 = sum(curvature >= 0.1631219 & curvature < 0.1976738),
+    edges_0.13 = sum(curvature >= 0.1318891 & curvature < 0.1631219),
+    edges_0.10 = sum(curvature >= 0.1023751	 & curvature < 0.1318891),
+    edges_0.07 = sum(curvature >= 0.0728637 & curvature < 0.1023751	),
+    edges_0.00 = sum(curvature >= 0.0000000	 & curvature < 0.0728637)
+  )
+```
+
+```{r}
+write.csv(result_level1_curvature, "D:/Dissertation/data/result_level1_curvature.csv", row.names = FALSE)
+```
+
+
+
+Aggregate topological and geometric properties
+```{r}
+result_level1 <- result_gini_closeness_centrality_level1 %>%
+  full_join(result_gini_betweenness_centrality_level1, by = "grid_id") %>%
+  full_join(result_level1_length, by = "grid_id") %>%
+  full_join(result_level1_curvature, by = "grid_id")
+```
+
+```{r}
+result_level1_no_node_edge <- result_level1 %>%
+  select(-nodes, -edges)
+```
+
+```{r}
+names(result_level1_no_node_edge)
+```
+
+```{r}
+result_level1_no_node_edge <- result_level1_no_node_edge %>%
+  mutate(
+    length_10 = edges_156 / num_edges,
+    length_20 = edges_106 / num_edges,
+    length_30 = edges_81 / num_edges,
+    length_40 = edges_66 / num_edges,
+    length_50 = edges_54 / num_edges,
+    length_60 = edges_43 / num_edges,
+    length_70 = edges_34 / num_edges,
+    length_80 = edges_24 / num_edges,
+    length_90 = edges_14 / num_edges,
+    length_100 = edges_1 / num_edges,
+    curvature_10 = edges_0.55 / num_edges,
+    curvature_20 = edges_0.37 / num_edges,
+    curvature_30 = edges_0.29 / num_edges,
+    curvature_40 = edges_0.24 / num_edges,
+    curvature_50 = edges_0.19 / num_edges,
+    curvature_60 = edges_0.16 / num_edges,
+    curvature_70 = edges_0.13 / num_edges,
+    curvature_80 = edges_0.10 / num_edges,
+    curvature_90 = edges_0.07 / num_edges,
+    curvature_100 = edges_0.00 / num_edges
+  )
+```
+
+```{r}
+result_level1_no_node_edge <- result_level1_no_node_edge %>%
+  mutate(
+    meshedness_coefficient_level1 = (num_edges - node_num + 1)/ ( 2 * node_num - 5)
+  )
+```
+
+```{r}
+write.csv(result_level1_no_node_edge, "D:/Dissertation/data/result_level1_no_node_edge.csv", row.names = FALSE)
+```
+
+```{r}
+file_path <- "D:/Dissertation/data/result_level1_no_node_edge.csv"
+
+
+result_level1_no_node_edge <- read.csv(file_path)
+```
+
+```{r}
+names(result_level1_no_node_edge)
+```
+
+```{r}
+columns <- setdiff(names(result_level1_no_node_edge), "grid_id")
+
+
+scatter_plot_list <- list()
+
+for(col in columns) {
+  p <- ggplot(result_level1_no_node_edge, aes_string(x = "grid_id", y = col)) +
+    geom_point() +
+    theme_minimal() +
+    labs(title = paste("Scatter Plot of", col, "vs grid_id"))
+  scatter_plot_list[[col]] <- p
+}
+
+
+for (name in names(scatter_plot_list)) {
+  print(scatter_plot_list[[name]])
+}
+```
+
+```{r}
+# long data
+long_data <- gather(result_level1_no_node_edge, key = "variable", value = "value", -grid_id)
+
+boxplot <- ggplot(long_data, aes(x = factor(grid_id), y = value)) +
+  geom_boxplot() +
+  facet_wrap(~ variable, scales = "free_y") +
+  theme_minimal() +
+  labs(title = "Boxplot of Variables by grid_id", x = "grid_id", y = "Value")
+
+print(boxplot)
+```
+
+
+```{r}
+# NA to 0
+result_level1_no_node_edge$gini_coefficient_closeness[is.na(result_level1_no_node_edge$gini_coefficient_closeness)] <- 0
+result_level1_no_node_edge$gini_coefficient_betweenness[is.na(result_level1_no_node_edge$gini_coefficient_betweenness)] <- 0
+```
+
+
+
+cluster
+```{r}
+data_for_clustering_level1 <- result_level1_no_node_edge %>% 
+  select("grid_id", "gini_coefficient_closeness", "gini_coefficient_betweenness", "length_10", 
+                     "length_20", "length_30", "length_40", "length_50", "length_60", 
+                     "length_70", "length_80", "length_90", "length_100", 
+                     "curvature_10", "curvature_20", "curvature_30", "curvature_40", 
+                     "curvature_50", "curvature_60", "curvature_70", "curvature_80", 
+                     "curvature_90", "curvature_100", "meshedness_coefficient_level1") %>%
+  drop_na() 
+
+
+
+k_variables_level1 <- data_for_clustering_level1[, c("gini_coefficient_closeness", "gini_coefficient_betweenness", "length_10", 
+                     "length_20", "length_30", "length_40", "length_50", "length_60", 
+                     "length_70", "length_80", "length_90", "length_100", 
+                     "curvature_10", "curvature_20", "curvature_30", "curvature_40", 
+                     "curvature_50", "curvature_60", "curvature_70", "curvature_80", 
+                     "curvature_90", "curvature_100", "meshedness_coefficient_level1")]
+
+
+k_variables_level1 <- as.data.frame(k_variables_level1) 
+
+```
+
+```{r}
+
+wss <- numeric(length = 10) 
+
+
+for (k in 1:10) {
+  kmeans_result_level1 <- kmeans(k_variables_level1, centers = k, nstart = 20)
+  wss[k] <- kmeans_result_level1$tot.withinss
+}
+
+
+plot(1:10, wss, type = "b", pch = 19, frame = FALSE, 
+     xlab = "Number of clusters (k)", ylab = "Total within-cluster sum of squares (WSS)")
+
+
+title("Elbow Method for Optimal k")
+
+
+abline(v = 1:10, col = "gray", lty = 2)
+
+```
+
+```{r}
+k <- 3
+set.seed(123) 
+kmeans_result_level1 <- kmeans(k_variables_level1, centers = k, nstart = 20)
+
+
+kmeans_result_level1$cluster 
+```
+
+Add cluster results
+```{r}
+cluster_labels_level1 <- kmeans_result_level1$cluster
+
+data_for_clustering_level1$cluster <- cluster_labels_level1
+```
+
+```{r}
+write.csv(data_for_clustering_level1, "D:/Dissertation/data/result_clustering_level1.csv", row.names = FALSE)
+```
+
+
+```{r}
+cluster_grid_id_level1 <- data_for_clustering_level1 %>%
+  group_by(cluster) %>%
+  summarise(grid_ids = list(grid_id))  
+
+# 查看结果
+cluster_grid_id_level1
+```
+
+```{r}
+# centroids
+centroids <- kmeans_result_level1$centers
+
+# Calculate the distance from each data point to the centroid of the cluster it belongs to
+cluster_labels_level1 <- kmeans_result_level1$cluster
+
+# Create an empty data frame to store the nearest data point in each cluster
+closest_points <- data.frame(cluster = integer(), grid_id = integer(), distance_to_center = double())
+
+
+for (i in unique(cluster_labels_level1)) {
+  
+  cluster_indices <- which(cluster_labels_level1 == i)
+  
+  
+  if (length(cluster_indices) > 0) {
+    
+    distances <- apply(k_variables_level1[cluster_indices, ], 1, function(x) sqrt(sum((x - centroids[i, ])^2)))
+    
+    
+    closest_index <- cluster_indices[which.min(distances)]
+    
+    
+    closest_grid_id <- data_for_clustering_level1$grid_id[closest_index]
+    
+    
+    closest_points <- rbind(closest_points, data.frame(cluster = i, grid_id = closest_grid_id, distance_to_center = min(distances)))
+  }
+}
+
+
+print(closest_points)
+```
+
+```{r}
+write.csv(closest_points, "D:/Dissertation/data/represent_grid_level1.csv", row.names = FALSE)
+```
+
+
+
+```{r}
+# centroids
+print(centroids)
+```
+
+Macro road network types
+
+```{r}
+
+type_level1 <- each_grid %>%
+  filter(grid_id %in% c(2494, 1151, 1617))
+```
+
+```{r}
+print(type_level1)
+```
+
+```{r}
+
+type_level1$edge_ids <- sapply(type_level1$edge_ids, function(x) paste(x, collapse = ", "))
+
+
+print(type_level1)
+```
+
+1 grid2494
+
+```{r}
+
+filtered_edges_type1_level1 <- edges_all_road %>%
+  filter(grid_id1 == 2494 | grid_id2 == 2494) %>%
+  distinct(edge_id, .keep_all = TRUE)
+
+```
+
+```{r}
+
+roads_type1_level1_sf <- road_lines_all_road %>%
+  filter(road_id %in% filtered_edges_type1_level1$edge_id)
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = roads_type1_level1_sf) +
+  theme_minimal()
+```
+
+
+
+2 grid1151
+
+```{r}
+
+filtered_edges_type2_level1 <- edges_all_road %>%
+  filter(grid_id1 == 1151 | grid_id2 == 1151) %>%
+  distinct(edge_id, .keep_all = TRUE)
+
+```
+
+```{r}
+
+roads_type2_level1_sf <- road_lines_all_road %>%
+  filter(road_id %in% filtered_edges_type2_level1$edge_id)
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = roads_type2_level1_sf) +
+  theme_minimal()
+```
+
+3 grid1617
+
+```{r}
+
+filtered_edges_type3_level1 <- edges_all_road %>%
+  filter(grid_id1 == 1617 | grid_id2 == 1617) %>%
+  distinct(edge_id, .keep_all = TRUE)
+
+```
+
+```{r}
+
+roads_type3_level1_sf <- road_lines_all_road %>%
+  filter(road_id %in% filtered_edges_type3_level1$edge_id)
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = roads_type3_level1_sf) +
+  theme_minimal()
+```
+
+
+## Micro
+
+
+Local
+
+```{r}
+
+unique_classes <- unique(road_london2$class)
+print(unique_classes)
+```
+
+```{r}
+# Screening out local road types of roads
+road_london2_filtered_level2 <- road_london2 %>%
+  filter(class %in% c("Unclassified", "Unknown", "Not Classified"))
+```
+
+```{r}
+
+export_file <- "D:/Dissertation/data/london_road2_level2"
+
+
+st_write(road_london2_filtered_level2, export_file, driver = "ESRI Shapefile")
+```
+
+```{r}
+london_road2_level2 <- st_read("D:/Dissertation/data/london_road2_level2/london_road2_level2.shp")
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = london_road2_level2) +
+  theme_minimal()
+```
+
+
+
+
+
+To network
+```{r}
+
+road_lines_level2 <- st_cast(london_road2_level2 , "LINESTRING")
+```
+
+```{r}
+
+endpoints_level2 <- st_geometry(road_lines_level2) %>%
+  st_coordinates() %>%
+  as.data.frame() %>%
+  group_by(L1) %>%
+  summarise(start_x = first(X),
+            start_y = first(Y),
+            end_x = last(X),
+            end_y = last(Y))
+```
+
+
+```{r}
+
+nodes_level2 <- endpoints_level2 %>%
+  select(start_x, start_y) %>%
+  rename(x = start_x, y = start_y) %>%
+  bind_rows(endpoints_level2 %>%
+              select(end_x, end_y) %>%
+              rename(x = end_x, y = end_y)) %>%
+  distinct() %>%
+  rowid_to_column("node_id_2")
+```
+
+```{r}
+
+nodes_level2 <- nodes_level2 %>%
+  mutate(node_id_level2 = nodes_all_road$node_id[match(paste(x, y), paste(nodes_all_road$x, nodes_all_road$y))])
+```
+
+```{r}
+
+edges_level2 <- endpoints_level2 %>%
+  left_join(nodes_level2, by = c("start_x" = "x", "start_y" = "y")) %>%
+  rename(start_node_level2 = node_id_level2) %>%
+  left_join(nodes_level2, by = c("end_x" = "x", "end_y" = "y")) %>%
+  rename(end_node_level2 = node_id_level2) %>%
+  select(start_node_level2, end_node_level2)
+```
+
+```{r}
+
+edges_level2 <- edges_level2 %>%
+  mutate(edge_id_level2 = edges_all_road$edge_id[match(paste(start_node_level2, end_node_level2), paste(edges_all_road$start_node, edges_all_road$end_node))])
+```
+
+```{r}
+
+nodes_level2 <- nodes_level2 %>%
+  select(node_id_level2, x, y, node_id_2)
+```
+
+```{r}
+
+graph_level2 <- graph_from_data_frame(
+  d = edges_level2,
+  vertices = nodes_level2,
+  directed = FALSE
+)
+
+```
+
+```{r}
+
+if (is.null(E(graph_level2)$weight)) {
+  print("Graph does not have weight edge attribute.")
+} else {
+  print("Graph has weight edge attribute.")
+}
+```
+
+Node closeness centrality
+
+```{r}
+
+closeness_centrality_level2 <- closeness(graph_level2, mode = "all", normalized = FALSE, weights = NA)
+```
+
+```{r}
+
+ccentrality_df_level2 <- data.frame(
+  node_id_level2 = nodes_level2$node_id_level2,
+  closeness_centrality_level2 = closeness_centrality_level2
+)
+```
+
+```{r}
+
+write.csv(ccentrality_df_level2, "D:/Dissertation/data/london_road/node_centrality2_buffered_level2.csv", row.names = FALSE)
+```
+
+Edge betweenness centrality
+```{r}
+
+betweenness_centrality_level2 <- edge_betweenness(graph_level2, e = E(graph_level2),directed = FALSE, weights = NULL, cutoff = -1)
+```
+
+```{r}
+
+bcentrality_df_level2 <- data.frame(
+  edge_id_level2 = edges_level2$edge_id_level2,
+  betweenness_centrality_level2 = betweenness_centrality_level2
+)
+```
+
+```{r}
+
+write.csv(bcentrality_df_level2, "D:/Dissertation/data/london_road/edge_centrality2_buffered_level2.csv", row.names = FALSE)
+```
+
+
+```{r}
+
+file_path <- "D:/Dissertation/data/london_road/node_centrality2_buffered_level2.csv"
+
+
+node_centrality_level2 <- read.csv(file_path)
+```
+
+```{r}
+file_path <- "D:/Dissertation/data/london_road/edge_centrality2_buffered_level2.csv"
+
+
+edge_bcentrality_level2 <- read.csv(file_path)
+```
+
+```{r}
+
+nodes_level2_sf <- nodes_level2 %>%
+  st_as_sf(coords = c("x", "y"), crs = 27700) 
+```
+
+```{r}
+
+nodes_level2_sf <- nodes_level2_sf %>%
+  left_join(node_centrality_level2, by = "node_id_level2")
+```
+
+```{r}
+# Rank
+nodes_level2_sf <- nodes_level2_sf %>%
+  mutate(closeness_centrality_rank = row_number(closeness_centrality_level2))
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = nodes_level2_sf, aes(color = closeness_centrality_rank), size = 0.1) +
+  scale_color_viridis_c(option = "viridis") + 
+  theme_minimal() +
+  labs(
+    title = "Micro Road Network with Closeness Centrality",
+    color = "Closeness Centrality", 
+  ) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+```{r}
+
+edge_level2_with_coords <- edges_level2 %>%
+  left_join(edges_all_road_with_coords, by = c("edge_id_level2" = "edge_id"))
+```
+
+```{r}
+
+edges_level2_sf <- edge_level2_with_coords %>%
+  rowwise() %>%
+  mutate(geometry = st_sfc(st_linestring(matrix(c(start_x, start_y, end_x, end_y), ncol = 2, byrow = TRUE)))) %>%
+  ungroup()
+
+
+edges_level2_sf <- st_as_sf(edges_level2_sf, crs = 27700) 
+```
+
+```{r}
+edges_level2_sf <- edges_level2_sf %>%
+  left_join(edge_bcentrality_level2, by = "edge_id_level2")
+```
+
+```{r}
+# Rank
+edges_level2_sf <- edges_level2_sf %>%
+  mutate(betweenness_centrality_rank = row_number(betweenness_centrality_level2))
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = edges_level2_sf, aes(color = betweenness_centrality_rank), size = 0.1) +
+  scale_color_viridis_c(option = "viridis") +  
+  theme_minimal() +
+  labs(
+    title = "Micro Road Network with Betweenness Centrality",
+    color = "Betweenness Centrality"
+  ) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+Linked to all road network data
+```{r}
+
+df_merged_node <- merge(nodes_all_road_in_grids_centrality_df, 
+                   node_centrality_level2, 
+                   by.x = "node_id", 
+                   by.y = "node_id_level2", 
+                   all.x = TRUE)
+
+
+nodes_all_road_in_grids_df <- df_merged_node
+```
+
+```{r}
+
+df_merged_edge2 <- merge(edges_all_road_geometry, 
+                   edge_bcentrality_level2, 
+                   by.x = "edge_id", 
+                   by.y = "edge_id_level2", 
+                   all.x = TRUE)
+
+
+edges_all_road_in_grids_df2 <- df_merged_edge
+```
+
+Keep level2node
+```{r}
+
+nodes_level2_in_grids_attribute <- nodes_all_road_in_grids_attribute %>%
+  filter(!is.na(closeness_centrality_level2))
+```
+                
+```{r}
+
+write.csv(nodes_level2_in_grids_attribute, "D:/Dissertation/data/nodes_level2_in_grids_attribute.csv", row.names = FALSE)
+```
+
+Read the attribute information of the node
+```{r}
+
+file_path <- "D:/Dissertation/data/nodes_level2_in_grids_attribute.csv"
+
+
+nodes_level2_in_grids_attribute <- read.csv(file_path)
+```
+
+Calculate the Gini coefficient of node centrality and the number of nodes in the grid
+```{r}
+
+gini_coefficient <- function(x) {
+  if(length(x) <= 1) return(NA) 
+  return(Gini(x))
+}
+
+result_gini_closeness_centrality_level2 <- nodes_level2_in_grids_attribute %>%
+  group_by(grid_id) %>%
+  summarise(
+    nodes = list(node_id), 
+    gini_coefficient_closeness = gini_coefficient(closeness_centrality_level2),  
+    node_num = n()  
+  )
+```
+
+```{r}
+
+values <- c(0.000538793103448276, 0.000585480093676815)
+
+
+gini_coefficient <- Gini(values)
+
+
+print(gini_coefficient)
+```
+
+Read attribute information for all edges
+```{r}
+
+file_path <- "D:/Dissertation/data/edges_all_road_in_grids_attribute.csv"
+
+
+edges_all_road_in_grids_attribute <- read.csv(file_path)
+```
+
+Keep level2edge
+```{r}
+
+edges_level2_in_grids_attribute <- edges_all_road_in_grids_attribute %>%
+  filter(!is.na(betweenness_centrality_level2))
+```
+
+Retain edges in the grid
+```{r}
+
+edges_level2_in_grids_attribute <- edges_level2_in_grids_attribute %>%
+  filter(!(is.na(grid_id1) & is.na(grid_id2)))
+```
+
+```{r}
+
+write.csv(edges_level2_in_grids_attribute, "D:/Dissertation/data/edges_level2_in_grids_attribute.csv", row.names = FALSE)
+```
+
+
+```{r}
+
+file_path <- "D:/Dissertation/data/edges_level2_in_grids_attribute.csv"
+
+
+edges_level2_in_grids_attribute <- read.csv(file_path)
+```
+
+Calculate the Gini coefficient and number of edges for each grid
+```{r}
+
+gini_coefficient <- function(x) {
+  if(length(x) <= 1) return(NA) 
+  return(Gini(x))
+}
+
+
+edges_long_level2 <- edges_level2_in_grids_attribute %>%
+  select(edge_id, grid_id1, betweenness_centrality_level2) %>%
+  rename(grid_id = grid_id1) %>%
+  bind_rows(
+    edges_level2_in_grids_attribute %>%
+      select(edge_id, grid_id2, betweenness_centrality_level2) %>%
+      rename(grid_id = grid_id2)
+  ) %>%
+  distinct(edge_id, grid_id, .keep_all = TRUE)  
+
+
+result_gini_betweenness_centrality_level2 <- edges_long_level2 %>%
+  group_by(grid_id) %>%
+  summarise(
+    edges = list(unique(edge_id)),  
+    num_edges = n(),  
+    gini_coefficient_betweenness = gini_coefficient(betweenness_centrality_level2)  
+  )
+```
+
+```{r}
+
+values <- c(149, 864, 1136
+)
+
+
+gini_coefficient <- Gini(values)
+
+
+print(gini_coefficient)
+```
+
+Geometric properties calculated for the first 10 per cent, 20 per cent, 30 per cent, 40 per cent, 50 per cent, 60 per cent, 70 per cent, 80 per cent, 90 per cent, 100 per cent
+```{r}
+
+df_sorted_level2_length <- edges_level2_in_grids_attribute %>%
+  arrange(desc(length))
+
+
+total_rows <- nrow(df_sorted_level2_length)
+
+
+percentiles <- c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+
+
+result_geometry_rank_level2_length <- data.frame(
+  percentile = numeric(length(percentiles)),
+  length_value = numeric(length(percentiles)))
+
+
+
+for (i in 1:length(percentiles)) {
+  percentile <- percentiles[i]
+  
+  
+  position <- ceiling((percentile / 100) * total_rows)
+  
+  
+  selected_data <- df_sorted_level2_length %>%
+    slice(position)
+  
+  
+  result_geometry_rank_level2_length[i, "percentile"] <- percentile
+  result_geometry_rank_level2_length[i, "length_value"] <- selected_data$length
+}
+
+
+print(result_geometry_rank_level2_length)
+```
+
+```{r}
+
+count_length_180 <- sum(edges_level2_in_grids_attribute$length >= 180)
+
+
+cat("Number of values where length >= 180:", count_length_180, "\n")
+```
+
+```{r}
+write.csv(result_geometry_rank_level2_length, "D:/Dissertation/data/result_geometry_rank_level2_length.csv", row.names = FALSE)
+```
+
+```{r}
+
+df_sorted_level2_curvature <- edges_level2_in_grids_attribute %>%
+  arrange(desc(curvature))
+
+
+total_rows <- nrow(df_sorted_level2_curvature)
+
+
+percentiles <- c(10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+
+
+result_geometry_rank_level2_curvature <- data.frame(
+  percentile = numeric(length(percentiles)),
+  curvature_value = numeric(length(percentiles)))
+
+
+for (i in 1:length(percentiles)) {
+  percentile <- percentiles[i]
+  
+  
+  position <- ceiling((percentile / 100) * total_rows)
+  
+  
+  selected_data <- df_sorted_level2_curvature %>%
+    slice(position)
+  
+ 
+  result_geometry_rank_level2_curvature[i, "percentile"] <- percentile
+  result_geometry_rank_level2_curvature[i, "curvature_value"] <- selected_data$curvature
+}
+
+
+print(result_geometry_rank_level2_curvature)
+```
+
+```{r}
+
+count_curvature_0.37024024 <- sum(edges_level2_in_grids_attribute$curvature >= 0.37024024)
+
+
+cat("Number of values where curvature >= 0.37024024:", count_curvature_0.37024024, "\n")
+```
+
+```{r}
+write.csv(result_geometry_rank_level2_curvature, "D:/Dissertation/data/result_geometry_rank_level2_curvature.csv", row.names = FALSE)
+```
+
+First 10 per cent, 20 per cent, 30 per cent, 40 per cent, 50 per cent, 60 per cent, 70 per cent, 80 per cent, 90 per cent, 100 per cent length
+```{r}
+edges_long_level2_length <- edges_level2_in_grids_attribute %>%
+  select(edge_id, grid_id1, grid_id2, length) %>%
+  rename(grid_id = grid_id1) %>%
+  bind_rows(
+    edges_level2_in_grids_attribute %>%
+      select(edge_id, grid_id1, grid_id2, length) %>%
+      rename(grid_id = grid_id2)
+  )
+```
+
+```{r}
+
+edges_long_level2_length_unique <- edges_long_level2_length %>%
+  distinct(edge_id, grid_id, .keep_all = TRUE)
+```
+
+```{r}
+
+length_values <- c(180, 127, 98, 80, 67, 56, 46, 39, 26, 1)
+
+
+result_level2_length <- edges_long_level2_length_unique %>%
+  group_by(grid_id) %>%
+  summarise(
+    edges_180 = sum(length >= 180),
+    edges_127 = sum(length >= 127 & length < 180),
+    edges_98 = sum(length >= 98 & length < 127),
+    edges_80 = sum(length >= 80 & length < 98),
+    edges_67 = sum(length >= 67 & length < 80),
+    edges_56 = sum(length >= 56 & length < 67),
+    edges_46 = sum(length >= 46 & length < 56),
+    edges_39 = sum(length >= 39 & length < 46),
+    edges_26 = sum(length >= 26 & length < 39),
+    edges_1 = sum(length >= 1 & length < 26)
+  )
+```
+
+```{r}
+write.csv(result_level2_length, "D:/Dissertation/data/result_level2_length.csv", row.names = FALSE)
+```
+
+First 10%, 20%, 30%, 40%, 50%, 60%, 70%, 80%, 90%, 100% curvature
+```{r}
+edges_long_level2_curvature <- edges_level2_in_grids_attribute %>%
+  select(edge_id, grid_id1, grid_id2, curvature) %>%
+  rename(grid_id = grid_id1) %>%
+  bind_rows(
+    edges_level2_in_grids_attribute %>%
+      select(edge_id, grid_id1, grid_id2, curvature) %>%
+      rename(grid_id = grid_id2)
+  )
+```
+
+```{r}
+edges_long_level2_curvature_unique <- edges_long_level2_curvature %>%
+  distinct(edge_id, grid_id, .keep_all = TRUE)
+```
+
+```{r}
+curvature_values <- c(0.37024024, 0.26790044, 0.21202861, 0.17415198, 0.15014612, 0.12854083, 0.10708814, 0.08634590	, 0.06356713, 0.00000000	)
+
+
+result_level2_curvature <- edges_long_level2_curvature_unique %>%
+  group_by(grid_id) %>%
+  summarise(
+    edges_0.37 = sum(curvature >= 0.37024024),
+    edges_0.26 = sum(curvature >= 0.26790044 & curvature < 0.37024024),
+    edges_0.21 = sum(curvature >= 0.21202861 & curvature < 0.26790044),
+    edges_0.17 = sum(curvature >= 0.17415198 & curvature < 0.21202861),
+    edges_0.15 = sum(curvature >= 0.15014612 & curvature < 0.17415198),
+    edges_0.12 = sum(curvature >= 0.12854083 & curvature < 0.15014612),
+    edges_0.10 = sum(curvature >= 0.10708814 & curvature < 0.12854083),
+    edges_0.08 = sum(curvature >= 0.08634590 & curvature < 0.10708814),
+    edges_0.06 = sum(curvature >= 0.06356713 & curvature < 0.08634590),
+    edges_0.00 = sum(curvature >= 0.00000000 & curvature < 0.06356713)
+  )
+```
+
+```{r}
+write.csv(result_level2_curvature, "D:/Dissertation/data/result_level2_curvature.csv", row.names = FALSE)
+```
+
+Aggregate topological and geometric properties
+```{r}
+result_level2 <- result_gini_closeness_centrality_level2 %>%
+  full_join(result_gini_betweenness_centrality_level2, by = "grid_id") %>%
+  full_join(result_level2_length, by = "grid_id") %>%
+  full_join(result_level2_curvature, by = "grid_id")
+```
+
+```{r}
+
+result_level2_no_node_edge <- result_level2 %>%
+  select(-nodes, -edges)
+```
+
+```{r}
+names(result_level2_no_node_edge)
+```
+
+```{r}
+result_level2_no_node_edge <- result_level2_no_node_edge %>%
+  mutate(
+    length_10 = edges_180 / num_edges,
+    length_20 = edges_127 / num_edges,
+    length_30 = edges_98 / num_edges,
+    length_40 = edges_80 / num_edges,
+    length_50 = edges_67 / num_edges,
+    length_60 = edges_56 / num_edges,
+    length_70 = edges_46 / num_edges,
+    length_80 = edges_39 / num_edges,
+    length_90 = edges_26 / num_edges,
+    length_100 = edges_1 / num_edges,
+    curvature_10 = edges_0.37 / num_edges,
+    curvature_20 = edges_0.26 / num_edges,
+    curvature_30 = edges_0.21 / num_edges,
+    curvature_40 = edges_0.17 / num_edges,
+    curvature_50 = edges_0.15 / num_edges,
+    curvature_60 = edges_0.12 / num_edges,
+    curvature_70 = edges_0.10 / num_edges,
+    curvature_80 = edges_0.08 / num_edges,
+    curvature_90 = edges_0.06 / num_edges,
+    curvature_100 = edges_0.00 / num_edges
+  )
+```
+
+```{r}
+result_level2_no_node_edge <- result_level2_no_node_edge %>%
+  mutate(
+    meshedness_coefficient_level2 = (num_edges - node_num + 1)/ ( 2 * node_num - 5)
+  )
+```
+
+```{r}
+write.csv(result_level2_no_node_edge, "D:/Dissertation/data/result_level2_no_node_edge.csv", row.names = FALSE)
+```
+
+```{r}
+file_path <- "D:/Dissertation/data/result_level2_no_node_edge.csv"
+
+
+result_level2_no_node_edge <- read.csv(file_path)
+```
+
+```{r}
+names(result_level2_no_node_edge)
+```
+
+```{r}
+
+columns <- setdiff(names(result_level2_no_node_edge), "grid_id")
+
+
+scatter_plot_list <- list()
+
+for(col in columns) {
+  p <- ggplot(result_level2_no_node_edge, aes_string(x = "grid_id", y = col)) +
+    geom_point() +
+    theme_minimal() +
+    labs(title = paste("Scatter Plot of", col, "vs grid_id"))
+  scatter_plot_list[[col]] <- p
+}
+
+
+for (name in names(scatter_plot_list)) {
+  print(scatter_plot_list[[name]])
+}
+```
+
+```{r}
+result_level2_no_node_edge$gini_coefficient_closeness[is.na(result_level2_no_node_edge$gini_coefficient_closeness)] <- 0
+result_level2_no_node_edge$gini_coefficient_betweenness[is.na(result_level2_no_node_edge$gini_coefficient_betweenness)] <- 0
+```
+
+Cluster
+```{r}
+data_for_clustering_level2 <- result_level2_no_node_edge %>% 
+  select("grid_id", "gini_coefficient_closeness", "gini_coefficient_betweenness", "length_10", 
+                     "length_20", "length_30", "length_40", "length_50", "length_60", 
+                     "length_70", "length_80", "length_90", "length_100", 
+                     "curvature_10", "curvature_20", "curvature_30", "curvature_40", 
+                     "curvature_50", "curvature_60", "curvature_70", "curvature_80", 
+                     "curvature_90", "curvature_100", "meshedness_coefficient_level2") %>%
+  drop_na() 
+
+
+
+k_variables_level2 <- data_for_clustering_level2[, c("gini_coefficient_closeness", "gini_coefficient_betweenness", "length_10", 
+                     "length_20", "length_30", "length_40", "length_50", "length_60", 
+                     "length_70", "length_80", "length_90", "length_100", 
+                     "curvature_10", "curvature_20", "curvature_30", "curvature_40", 
+                     "curvature_50", "curvature_60", "curvature_70", "curvature_80", 
+                     "curvature_90", "curvature_100", "meshedness_coefficient_level2")]
+
+
+k_variables_level2 <- as.data.frame(k_variables_level2)  
+
+```
+
+```{r}
+
+wss <- numeric(length = 10) 
+
+for (k in 1:10) {
+  kmeans_result_level2 <- kmeans(k_variables_level2, centers = k, nstart = 20)
+  wss[k] <- kmeans_result_level2$tot.withinss
+}
+
+
+plot(1:10, wss, type = "b", pch = 19, frame = FALSE, 
+     xlab = "Number of clusters (k)", ylab = "Total within-cluster sum of squares (WSS)")
+
+
+title("Elbow Method for Optimal k")
+
+abline(v = 1:10, col = "gray", lty = 2)
+
+```
+
+```{r}
+
+elbow_finder <- function(wss) {
+  k_values <- 1:length(wss)
+  
+  slopes <- diff(wss) / diff(k_values)
+  
+  angles <- atan(abs(diff(slopes)))
+  
+  return(which.max(angles) + 1)
+}
+
+
+wss <- numeric(length = 10)  
+
+
+set.seed(42)
+
+for (k in 1:10) {
+  kmeans_result_level2 <- kmeans(k_variables_level2, centers = k, nstart = 20, iter.max = 50)
+  wss[k] <- kmeans_result_level2$tot.withinss
+}
+
+optimal_k <- elbow_finder(wss)
+
+
+plot(1:10, wss, type = "b", pch = 19, frame = FALSE, 
+     xlab = "Number of clusters (k)", ylab = "Total within-cluster sum of squares (WSS)",
+     main = paste("Elbow Method for Optimal k: ", optimal_k))
+
+
+abline(v = optimal_k, col = "red", lty = 2)
+
+
+abline(v = 1:10, col = "gray", lty = 2)
+```
+
+```{r}
+
+k <- 4
+set.seed(42)  
+kmeans_result_level2 <- kmeans(k_variables_level2, centers = k, nstart = 20)
+
+
+kmeans_result_level2$cluster  
+```
+
+```{r}
+cluster_labels_level2 <- kmeans_result_level2$cluster
+
+data_for_clustering_level2$cluster <- cluster_labels_level2
+```
+
+```{r}
+write.csv(data_for_clustering_level2, "D:/Dissertation/data/result_clustering_level2.csv", row.names = FALSE)
+```
+
+
+```{r}
+cluster_grid_id_level2 <- data_for_clustering_level2 %>%
+  group_by(cluster) %>%
+  summarise(grid_ids = list(grid_id)) 
+
+cluster_grid_id_level2
+```
+
+```{r}
+# centroids
+centroids <- kmeans_result_level2$centers
+
+
+cluster_labels_level2 <- kmeans_result_level2$cluster
+
+
+closest_points <- data.frame(cluster = integer(), grid_id = integer(), distance_to_center = double())
+
+
+for (i in unique(cluster_labels_level2)) {
+  
+  cluster_indices <- which(cluster_labels_level2 == i)
+  
+  
+  if (length(cluster_indices) > 0) {
+    
+    distances <- apply(k_variables_level2[cluster_indices, ], 1, function(x) sqrt(sum((x - centroids[i, ])^2)))
+    
+    
+    closest_index <- cluster_indices[which.min(distances)]
+    
+    
+    closest_grid_id <- data_for_clustering_level2$grid_id[closest_index]
+    
+    
+    closest_points <- rbind(closest_points, data.frame(cluster = i, grid_id = closest_grid_id, distance_to_center = min(distances)))
+  }
+}
+
+
+print(closest_points)
+```
+
+```{r}
+write.csv(closest_points, "D:/Dissertation/data/represent_grid_level2.csv", row.names = FALSE)
+```
+
+```{r}
+print(centroids)
+```
+
+Micro road network types
+
+```{r}
+type_level2 <- each_grid %>%
+  filter(grid_id %in% c(982, 76, 1864, 1115))
+```
+
+```{r}
+print(type_level2)
+```
+
+```{r}
+type_level2$edge_ids <- sapply(type_level2$edge_ids, function(x) paste(x, collapse = ", "))
+
+
+print(type_level2)
+```
+
+1 grid982
+
+```{r}
+
+filtered_edges_type1_level2 <- edges_all_road %>%
+  filter(grid_id1 == 982 | grid_id2 == 982) %>%
+  distinct(edge_id, .keep_all = TRUE)
+
+```
+
+```{r}
+
+roads_type1_level2_sf <- road_lines_all_road %>%
+  filter(road_id %in% filtered_edges_type1_level2$edge_id)
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = roads_type1_level2_sf) +
+  theme_minimal()
+```
+
+2 grid76
+
+```{r}
+
+filtered_edges_type2_level2 <- edges_all_road %>%
+  filter(grid_id1 == 76 | grid_id2 == 76) %>%
+  distinct(edge_id, .keep_all = TRUE)
+
+```
+
+```{r}
+
+roads_type2_level2_sf <- road_lines_all_road %>%
+  filter(road_id %in% filtered_edges_type2_level2$edge_id)
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = roads_type2_level2_sf) +
+  theme_minimal()
+```
+
+3 grid1864
+
+```{r}
+
+filtered_edges_type3_level2 <- edges_all_road %>%
+  filter(grid_id1 == 1864 | grid_id2 == 1864) %>%
+  distinct(edge_id, .keep_all = TRUE)
+
+```
+
+```{r}
+
+roads_type3_level2_sf <- road_lines_all_road %>%
+  filter(road_id %in% filtered_edges_type3_level2$edge_id)
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = roads_type3_level2_sf) +
+  theme_minimal()
+```
+
+4 grid1115
+
+```{r}
+filtered_edges_type4_level2 <- edges_all_road %>%
+  filter(grid_id1 == 1115 | grid_id2 == 1115) %>%
+  distinct(edge_id, .keep_all = TRUE)
+
+```
+
+```{r}
+
+roads_type4_level2_sf <- road_lines_all_road %>%
+  filter(road_id %in% filtered_edges_type4_level2$edge_id)
+```
+
+```{r}
+ggplot() +
+  geom_sf(data = roads_type4_level2_sf) +
+  theme_minimal()
+```
+
+# Pedestrians casualties
+Read 5 years of collisions and casualties data
+```{r}
+collision_all_year <- read.csv("D:/Dissertation/data/dft-road-casualty-statistics-collision-last-5-years.csv")
+```
+
+```{r}
+casualties_all_year <- read.csv("D:/Dissertation/data/dft-road-casualty-statistics-casualty-last-5-years.csv")
+```
+
+Selected pedestrian casualty data
+```{r}
+pedestrian_casualty_all_year <- subset(casualties_all_year, casualty_class == 3)
+```
+
+Linked to collision data
+```{r}
+pedestrian_casualty_all_year <- merge(collision_all_year, pedestrian_casualty_all_year, by = "accident_index")
+```
+
+```{r}
+
+pedestrian_casualty_all_year$location_easting_osgr[pedestrian_casualty_all_year$location_easting_osgr == "NULL"] <- NA
+pedestrian_casualty_all_year$location_northing_osgr[pedestrian_casualty_all_year$location_northing_osgr == "NULL"] <- NA
+
+
+pedestrian_casualty_all_year_no_NA <- pedestrian_casualty_all_year %>%
+  filter(!is.na(location_easting_osgr) & !is.na(location_northing_osgr))
+```
+
+Total pedestrian casualties
+```{r}
+
+pedestrian_casualty_all_year_sf <- st_as_sf(pedestrian_casualty_all_year_no_NA, coords = c("location_easting_osgr", "location_northing_osgr"), crs = 27700)
+
+
+city_grid_sf <- st_as_sf(city_grid)
+
+# Perform a spatial join, matching each incident to the corresponding grid_id
+pedestrian_casualty_all_year_with_grid <- st_join(pedestrian_casualty_all_year_sf, city_grid_sf, join = st_intersects)
+```
+
+```{r}
+write.csv(pedestrian_casualty_all_year_with_grid, "D:/Dissertation/data/pedestrian_casualty_all_year_with_grid.csv", row.names = FALSE)
+```
+
+```{r}
+pedestrian_casualty_all_year_with_grid <- read.csv("D:/Dissertation/data/pedestrian_casualty_all_year_with_grid.csv")
+```
+
+1 fatal
+```{r}
+# Select the row with a casualty_severity column value of 1
+pedestrian_casualty_fatal_with_grid <- pedestrian_casualty_all_year_with_grid %>%
+  filter(casualty_severity == 1)
+```
+
+```{r}
+write.csv(pedestrian_casualty_fatal_with_grid, "D:/Dissertation/data/pedestrian_casualty_fatal_with_grid.csv", row.names = FALSE)
+```
+
+```{r}
+pedestrian_casualty_fatal_with_grid <- read.csv("D:/Dissertation/data/pedestrian_casualty_fatal_with_grid.csv")
+```
+
+2 serious
+```{r}
+pedestrian_casualty_serious_with_grid <- pedestrian_casualty_all_year_with_grid %>%
+  filter(casualty_severity == 2)
+```
+
+```{r}
+write.csv(pedestrian_casualty_serious_with_grid, "D:/Dissertation/data/pedestrian_casualty_serious_with_grid.csv", row.names = FALSE)
+```
+
+```{r}
+
+pedestrian_casualty_serious_with_grid <- read.csv("D:/Dissertation/data/pedestrian_casualty_serious_with_grid.csv")
+```
+
+3 slight
+```{r}
+pedestrian_casualty_slight_with_grid <- pedestrian_casualty_all_year_with_grid %>%
+  filter(casualty_severity == 3)
+```
+
+```{r}
+write.csv(pedestrian_casualty_slight_with_grid, "D:/Dissertation/data/pedestrian_casualty_slight_with_grid.csv", row.names = FALSE)
+```
+
+```{r}
+pedestrian_casualty_slight_with_grid <- read.csv("D:/Dissertation/data/pedestrian_casualty_slight_with_grid.csv")
+```
+
+Counting the number of pedestrian casualties from traffic accidents in each grid_id
+All pedestrian casualty data
+```{r}
+
+pedestrian_casualty_all_in_grid <- pedestrian_casualty_all_year_with_grid %>%
+  group_by(grid_id) %>%
+  summarize(pedestrian_casualty_num = n_distinct(accident_index))
+```
+
+1 fatal
+```{r}
+
+pedestrian_casualty_fatal_in_grid <- pedestrian_casualty_fatal_with_grid %>%
+  group_by(grid_id) %>%
+  summarize(pedestrian_casualty_fatal_num = n_distinct(accident_index))
+```
+
+2 serious
+```{r}
+
+pedestrian_casualty_serious_in_grid <- pedestrian_casualty_serious_with_grid %>%
+  group_by(grid_id) %>%
+  summarize(pedestrian_casualty_serious_num = n_distinct(accident_index))
+```
+
+3 slight
+```{r}
+
+pedestrian_casualty_slight_in_grid <- pedestrian_casualty_slight_with_grid %>%
+  group_by(grid_id) %>%
+  summarize(pedestrian_casualty_slight_num = n_distinct(accident_index))
+```
+
+# Road network and casualties
+Road network data
+```{r}
+file_path <- "D:/Dissertation/data/result_clustering_level1.csv"
+
+
+result_clustering_level1 <- read.csv(file_path)
+```
+
+```{r}
+
+result_clustering_level1 <- result_clustering_level1 %>%
+  rename(cluster_level1 = cluster)
+```
+
+```{r}
+file_path <- "D:/Dissertation/data/result_clustering_level2.csv"
+
+
+result_clustering_level2 <- read.csv(file_path)
+```
+
+```{r}
+
+result_clustering_level2 <- result_clustering_level2 %>%
+  rename(cluster_level2 = cluster)
+```
+
+Summary of road network data
+```{r}
+
+grid_with_road <- city_grid %>%
+  left_join(
+    result_clustering_level1 %>% 
+      select(grid_id, cluster_level1),
+    by = "grid_id"
+  )
+```
+
+```{r}
+
+grid_with_road <- grid_with_road %>%
+  left_join(
+    result_clustering_level2 %>% 
+      select(grid_id, cluster_level2),
+    by = "grid_id"
+  )
+```
+
+```{r}
+
+grid_with_road <- grid_with_road %>%
+  left_join(
+    result_max_closeness_centrality_all_road  %>% 
+      select(grid_id, max_closeness_centrality_all_road),
+    by = "grid_id"
+  )
+```
+
+```{r}
+grid_with_road_sf <- st_as_sf(grid_with_road, coords = c("geometry"), crs = 27700)
+```
+
+```{r}
+export_file <- "D:/Dissertation/data/grid_with_road"
+
+
+st_write(grid_with_road, export_file, driver = "ESRI Shapefile")
+```
+
+```{r}
+shapefile_path <- "D:/Dissertation/data/grid_with_road/grid_with_road.shp"
+
+grid_with_road <- st_read(shapefile_path)
+```
+
+
+Pedestrian casualty data
+```{r}
+
+grid_with_casualty <- city_grid %>%
+  st_join(
+    pedestrian_casualty_all_in_grid %>% 
+      select(grid_id, pedestrian_casualty_num),
+    by = "grid_id"
+  )
+```
+
+```{r}
+
+grid_with_casualty <- grid_with_casualty %>%
+  st_join(
+    pedestrian_casualty_fatal_in_grid %>% 
+      select(grid_id, pedestrian_casualty_fatal_num),
+    by = "grid_id"
+  )
+```
+
+```{r}
+
+grid_with_casualty <- grid_with_casualty %>%
+  st_join(
+    pedestrian_casualty_serious_in_grid %>% 
+      select(grid_id, pedestrian_casualty_serious_num),
+    by = "grid_id"
+  )
+```
+
+```{r}
+
+grid_with_casualty <- grid_with_casualty %>%
+  st_join(
+    pedestrian_casualty_slight_in_grid %>% 
+      select(grid_id, pedestrian_casualty_slight_num),
+    by = "grid_id"
+  )
+```
+
+```{r}
+
+grid_with_casualty <- grid_with_casualty %>%
+  select(-c(grid_id.y, grid_id.x.1, grid_id.y.1, grid_id))
+```
+
+```{r}
+
+grid_with_casualty <- grid_with_casualty %>%
+  rename(grid_id = grid_id.x)
+```
+
+```{r}
+
+grid_with_casualty_df <- st_drop_geometry(grid_with_casualty)
+```
+
+```{r}
+write.csv(grid_with_casualty_df, "D:/Dissertation/data/grid_with_casualty_df.csv", row.names = FALSE)
+```
+
+```{r}
+grid_with_casualty_df <- read.csv("D:/Dissertation/data/grid_with_casualty_df.csv")
+```
+
+Road network and pedestrian casualty data
+```{r}
+# Use left_join to add the pedestrian_casualty_num, pedestrian_casualty_fatal_num, pedestrian_casualty_serious_num, pedestrian_casualty_slight_num columns to grid_with_road and set the max_closeness_centrality_all_road of the non-existing grid_id to NA. Add to grid_with_road and set max_closeness_centrality_all_road to NA for non-existing grid_ids
+grid_with_road_casualty <- grid_with_road %>%
+  left_join(
+    grid_with_casualty_df  %>% 
+      select(grid_id, pedestrian_casualty_num, pedestrian_casualty_fatal_num, pedestrian_casualty_serious_num, pedestrian_casualty_slight_num),
+    by = "grid_id"
+  )
+```
+
+```{r}
+grid_with_road_casualty <- grid_with_road_casualty %>%
+  rename(pedestrian_num = pedestrian_casualty_num, fatal_num = pedestrian_casualty_fatal_num, serious_num = pedestrian_casualty_serious_num, slight_num = pedestrian_casualty_slight_num)
+```
+
+```{r}
+export_file <- "D:/Dissertation/data/grid_with_road_casualty"
+
+st_write(grid_with_road_casualty, export_file, driver = "ESRI Shapefile")
+```
+
+```{r}
+shapefile_path <- "D:/Dissertation/data/grid_with_road_casualty/grid_with_road_casualty.shp"
+
+
+grid_with_road_casualty <- st_read(shapefile_path)
+```
+
+```{r}
+names(grid_with_road_casualty)
+```
+
+Type of statistical road network
+```{r}
+grid_with_road_casualty <- grid_with_road_casualty[!(is.na(grid_with_road_casualty$clstr_1) & is.na(grid_with_road_casualty$clstr_2)), ]
+```
+
+```{r}
+grid_with_road_casualty <- grid_with_road_casualty %>%
+  mutate(
+    clstr_1_label = case_when(
+      clstr_1 == 1 ~ "A",
+      clstr_1 == 2 ~ "B",
+      clstr_1 == 3 ~ "C",
+      is.na(clstr_1) ~ "D"
+    ),
+    clstr_2_label = case_when(
+      clstr_2 == 1 ~ "1",
+      clstr_2 == 2 ~ "2",
+      clstr_2 == 3 ~ "3",
+      clstr_2 == 4 ~ "4",
+      is.na(clstr_2) ~ "5"
+    ),
+    road_type = paste0(clstr_1_label, clstr_2_label)
+  ) %>%
+  select(-clstr_1_label, -clstr_2_label)  
+```
+
+```{r}
+
+na_count <- sum(is.na(grid_with_road_casualty$clstr_1))
+
+
+cat("Number of NA values in 'clstr_1':", na_count, "\n")
+```
+
+```{r}
+
+na_count <- sum(is.na(grid_with_road_casualty$clstr_2))
+
+
+cat("Number of NA values in 'clstr_2':", na_count, "\n")
+```
+
+
+
+```{r}
+# NA to 0
+grid_with_road_type_casualty <- grid_with_road_casualty %>%
+  mutate(
+    pdstrn_ = ifelse(is.na(pdstrn_), 0, pdstrn_),
+    fatl_nm = ifelse(is.na(fatl_nm), 0, fatl_nm),
+    sers_nm = ifelse(is.na(sers_nm), 0, sers_nm),
+    slght_n = ifelse(is.na(slght_n), 0, slght_n)
+  )
+```
+
+```{r}
+export_file <- "D:/Dissertation/data/grid_with_road_type_casualty"
+
+st_write(grid_with_road_type_casualty, export_file, driver = "ESRI Shapefile")
+```
+
+```{r}
+shapefile_path <- "D:/Dissertation/datagrid_with_road_type_casualty/grid_with_road_type_casualty.shp"
+
+grid_with_road_type_casualty <- st_read(shapefile_path)
+```
+
+```{r}
+names(grid_with_road_type_casualty)
+```
+
+```{r}
+unique_values <- unique(grid_with_road_type_casualty$road_type)
+
+print(unique_values)
+```
+
+
+Road network and pedestrian casualty links
+
+```{r}
+install.packages("pscl")
+library(pscl)
+```
+
+```{r}
+names(grid_with_road_type_casualty)
+```
+
+```{r}
+colSums(is.na(grid_with_road_type_casualty))
+```
+
+```{r}
+# log pdstrn_ 
+grid_with_road_type_casualty$log_pdstrn <- log1p(grid_with_road_type_casualty$pdstrn_)
+
+
+ggplot(grid_with_road_type_casualty, aes(x = road_type, y = log_pdstrn)) +
+  geom_boxplot(outlier.shape = NA) + 
+  geom_jitter(width = 0.2, alpha = 0.5) + 
+  labs(title = "Distribution of Total Pedestrian Casualties by Road Type",
+       x = "Road Type",
+       y = "Log Total Pedestrian Casualties") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+
+grid_with_road_type_casualty$log_pdstrn <- log1p(grid_with_road_type_casualty$pdstrn_)
+
+
+ggplot(grid_with_road_type_casualty, aes(x = road_type, y = log_pdstrn)) +
+  geom_boxplot(outliers = TRUE)+ 
+  geom_jitter(width = 0.2, alpha = 0.5) +
+  labs(title = "Distribution of Total Pedestrian Casualties by Road Type",
+       x = "Road Type",
+       y = "Log Total Pedestrian Casualties") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+
+ggplot(grid_with_road_type_casualty, aes(x = log_pdstrn, fill = road_type)) +
+  geom_density(alpha = 0.5) + 
+  labs(title = "Kernel Density Estimation of Total Pedestrian Casualties by Road Type",
+       x = "Log Total Pedestrian Casualties",
+       y = "Density") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+
+stats_summary <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarise(
+    Mean = mean(pdstrn_, na.rm = TRUE),
+    Median = median(pdstrn_, na.rm = TRUE),
+    SD = sd(pdstrn_, na.rm = TRUE),
+    Q1 = quantile(pdstrn_, 0.25, na.rm = TRUE),
+    Q3 = quantile(pdstrn_, 0.75, na.rm = TRUE)
+  )
+```
+
+
+```{r}
+
+distribution_stats1 <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarize(
+    count_0 = sum(pdstrn_ == 0),
+    count_01 = sum(pdstrn_ > 0 & pdstrn_ <= 1),
+    count_12 = sum(pdstrn_ > 1 & pdstrn_ <= 2),
+    count_gt2 = sum(pdstrn_ > 2)
+  ) %>%
+  pivot_longer(
+    cols = starts_with("count"),
+    names_to = "pdstrn_range",
+    values_to = "count"
+  ) %>%
+  mutate(
+    
+    pdstrn_range = case_when(
+      pdstrn_range == "count_0" ~ "0",
+      pdstrn_range == "count_01" ~ "(0, 1]",
+      pdstrn_range == "count_12" ~ "(1, 2]",
+      pdstrn_range == "count_gt2" ~ "(2, ∞)"
+    ),
+    
+    pdstrn_range = factor(pdstrn_range, levels = c("0", "(0, 1]", "(1, 2]", "(2, ∞)"))
+  )
+```
+
+```{r}
+ggplot(distribution_stats1, aes(x = pdstrn_range, y = count, color = road_type, group = road_type)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Distribution of Total Pedestrian Casualties by Road Type",
+       x = "Total Pedestrian Casualties Range",
+       y = "Number of Grids",
+       color = "Road Type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r}
+
+grid_with_road_type_casualty$log_fatl_nm <- log1p(grid_with_road_type_casualty$fatl_nm)
+
+
+min(grid_with_road_type_casualty$log_fatl_nm, na.rm = TRUE)
+```
+
+
+```{r}
+
+ggplot(grid_with_road_type_casualty, aes(x = road_type, y = log_fatl_nm)) +
+  geom_boxplot(outliers = TRUE) + 
+  geom_jitter(width = 0.2, height = 0, alpha = 0.5) +
+  labs(title = "Distribution of Fatal Pedestrian Casualties by Road Type",
+       x = "Road Type",
+       y = "Log Fatal Pedestrian Casualties") +
+  scale_y_continuous(limits = c(min(grid_with_road_type_casualty$log_fatl_nm, na.rm = TRUE), 
+                                max(grid_with_road_type_casualty$log_fatl_nm, na.rm = TRUE))) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+
+ggplot(grid_with_road_type_casualty, aes(x = log_fatl_nm, fill = road_type)) +
+  geom_density(alpha = 0.5) + 
+  labs(title = "Kernel Density Estimation of Fatal Pedestrian Casualties by Road Type",
+       x = "Log Fatal Pedestrian Casualties",
+       y = "Density") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+
+stats_summary2 <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarise(
+    Mean = mean(fatl_nm, na.rm = TRUE),
+    Median = median(fatl_nm, na.rm = TRUE),
+    SD = sd(fatl_nm, na.rm = TRUE),
+    Q1 = quantile(fatl_nm, 0.25, na.rm = TRUE),
+    Q3 = quantile(fatl_nm, 0.75, na.rm = TRUE)
+  )
+```
+
+
+```{r}
+
+distribution_stats2 <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarize(
+    count_0 = sum(fatl_nm == 0),
+    count_01 = sum(fatl_nm > 0 & pdstrn_ <= 1),
+    count_12 = sum(fatl_nm > 1 & pdstrn_ <= 2),
+    count_gt2 = sum(fatl_nm > 2)
+  ) %>%
+  pivot_longer(
+    cols = starts_with("count"),
+    names_to = "fatl_nm_range",
+    values_to = "count"
+  ) %>%
+  mutate(
+    
+    fatl_nm_range = case_when(
+      fatl_nm_range == "count_0" ~ "0",
+      fatl_nm_range == "count_01" ~ "(0, 1]",
+      fatl_nm_range == "count_12" ~ "(1, 2]",
+      fatl_nm_range == "count_gt2" ~ "(2, ∞)"
+    ),
+    
+    fatl_nm_range = factor(fatl_nm_range, levels = c("0", "(0, 1]", "(1, 2]", "(2, ∞)"))
+  )
+```
+
+```{r}
+
+ggplot(distribution_stats2, aes(x = fatl_nm_range, y = count, color = road_type, group = road_type)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Distribution of Fatal Pedestrian Casualties by Road Type",
+       x = "Fatal Pedestrian Casualties Range",
+       y = "Number of Grids",
+       color = "Road Type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+
+grid_with_road_type_casualty$log_sers_nm <- log1p(grid_with_road_type_casualty$sers_nm)
+
+min(grid_with_road_type_casualty$log_sers_nm, na.rm = TRUE)
+```
+
+
+```{r}
+
+ggplot(grid_with_road_type_casualty, aes(x = road_type, y = log_sers_nm)) +
+  geom_boxplot(outliers = TRUE) + 
+  geom_jitter(width = 0.2, height = 0, alpha = 0.5) + 
+  labs(title = "Distribution of Serious Pedestrian Casualties by Road Type",
+       x = "Road Type",
+       y = "Log Serious Pedestrian Casualties") +
+  scale_y_continuous(limits = c(min(grid_with_road_type_casualty$log_sers_nm, na.rm = TRUE), 
+                                max(grid_with_road_type_casualty$log_sers_nm, na.rm = TRUE))) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+
+ggplot(grid_with_road_type_casualty, aes(x = log_sers_nm, fill = road_type)) +
+  geom_density(alpha = 0.5) + 
+  labs(title = "Kernel Density Estimation of Serious Pedestrian Casualties by Road Type",
+       x = "Log Serious Pedestrian Casualties",
+       y = "Density") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+
+stats_summary3 <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarise(
+    Mean = mean(sers_nm, na.rm = TRUE),
+    Median = median(sers_nm, na.rm = TRUE),
+    SD = sd(sers_nm, na.rm = TRUE),
+    Q1 = quantile(sers_nm, 0.25, na.rm = TRUE),
+    Q3 = quantile(sers_nm, 0.75, na.rm = TRUE)
+  )
+```
+
+
+```{r}
+
+distribution_stats3 <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarize(
+    count_0 = sum(sers_nm == 0),
+    count_01 = sum(sers_nm > 0 & pdstrn_ <= 1),
+    count_12 = sum(sers_nm > 1 & pdstrn_ <= 2),
+    count_gt2 = sum(sers_nm > 2)
+  ) %>%
+  pivot_longer(
+    cols = starts_with("count"),
+    names_to = "sers_nm_range",
+    values_to = "count"
+  ) %>%
+  mutate(
+   
+    sers_nm_range = case_when(
+      sers_nm_range == "count_0" ~ "0",
+      sers_nm_range == "count_01" ~ "(0, 1]",
+      sers_nm_range == "count_12" ~ "(1, 2]",
+      sers_nm_range == "count_gt2" ~ "(2, ∞)"
+    ),
+    
+    sers_nm_range = factor(sers_nm_range, levels = c("0", "(0, 1]", "(1, 2]", "(2, ∞)"))
+  )
+```
+
+```{r}
+
+ggplot(distribution_stats3, aes(x = sers_nm_range, y = count, color = road_type, group = road_type)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Distribution of Serious Pedestrian Casualties by Road Type",
+       x = "Serious Pedestrian Casualties Range",
+       y = "Number of Grids",
+       color = "Road Type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r}
+
+grid_with_road_type_casualty$log_slght_n <- log1p(grid_with_road_type_casualty$slght_n)
+
+
+min(grid_with_road_type_casualty$log_slght_n, na.rm = TRUE)
+```
+
+
+```{r}
+
+ggplot(grid_with_road_type_casualty, aes(x = road_type, y = log_slght_n)) +
+  geom_boxplot(outliers = TRUE) + 
+  geom_jitter(width = 0.2, height = 0, alpha = 0.5) + 
+  labs(title = "Distribution of Slight Pedestrian Casualties by Road Type",
+       x = "Road Type",
+       y = "Log Slight Pedestrian Casualties") +
+  scale_y_continuous(limits = c(min(grid_with_road_type_casualty$log_slght_n, na.rm = TRUE), 
+                                max(grid_with_road_type_casualty$log_slght_n, na.rm = TRUE))) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+
+ggplot(grid_with_road_type_casualty, aes(x = log_slght_n, fill = road_type)) +
+  geom_density(alpha = 0.5) + 
+  labs(title = "Kernel Density Estimation of Slight Pedestrian Casualties by Road Type",
+       x = "Log Slight Pedestrian Casualties",
+       y = "Density") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+stats_summary4 <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarise(
+    Mean = mean(slght_n, na.rm = TRUE),
+    Median = median(slght_n, na.rm = TRUE),
+    SD = sd(slght_n, na.rm = TRUE),
+    Q1 = quantile(slght_n, 0.25, na.rm = TRUE),
+    Q3 = quantile(slght_n, 0.75, na.rm = TRUE)
+  )
+```
+
+
+```{r}
+
+distribution_stats4 <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarize(
+    count_0 = sum(slght_n == 0),
+    count_01 = sum(slght_n > 0 & pdstrn_ <= 1),
+    count_12 = sum(slght_n > 1 & pdstrn_ <= 2),
+    count_gt2 = sum(slght_n > 2)
+  ) %>%
+  pivot_longer(
+    cols = starts_with("count"),
+    names_to = "slght_n_range",
+    values_to = "count"
+  ) %>%
+  mutate(
+    
+    slght_n_range = case_when(
+      slght_n_range == "count_0" ~ "0",
+      slght_n_range == "count_01" ~ "(0, 1]",
+      slght_n_range == "count_12" ~ "(1, 2]",
+      slght_n_range == "count_gt2" ~ "(2, ∞)"
+    ),
+    
+    slght_n_range = factor(slght_n_range, levels = c("0", "(0, 1]", "(1, 2]", "(2, ∞)"))
+  )
+```
+
+```{r}
+
+ggplot(distribution_stats4, aes(x = slght_n_range, y = count, color = road_type, group = road_type)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Distribution of Slight Pedestrian Casualties by Road Type",
+       x = "Slight Pedestrian Casualties Range",
+       y = "Number of Grids",
+       color = "Road Type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+
+```{r}
+
+stats_summary_total <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarise(
+    Mean = mean(pdstrn_, na.rm = TRUE),
+    Median = median(pdstrn_, na.rm = TRUE),
+    SD = sd(pdstrn_, na.rm = TRUE),
+    Q1 = quantile(pdstrn_, 0.25, na.rm = TRUE),
+    Q3 = quantile(pdstrn_, 0.75, na.rm = TRUE)
+  )
+
+
+print(stats_summary_total)
+```
+
+
+
+```{r}
+grid_with_road_type_casualty_no_cluster <- subset(grid_with_road_type_casualty, select = -c(clstr_1, clstr_2))
+```
+
+```{r}
+names(grid_with_road_type_casualty_no_cluster)
+```
+
+Total pedestrian casualties
+```{r}
+
+summary_stats_all <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarise(total_pdstrn = sum(pdstrn_, na.rm = TRUE))
+```
+
+```{r}
+grid_filtered_pdstrn_not0 <- grid_with_road_type_casualty_no_cluster %>%
+  filter(!(road_type %in% c("A1", "A5", "B4", "B5", "C5", "D4")))
+```
+
+```{r}
+# Convert road_type to a factor and set A3 as the reference level
+grid_filtered_pdstrn_not0$road_type <- factor(grid_filtered_pdstrn_not0$road_type)
+grid_filtered_pdstrn_not0$road_type <- relevel(grid_filtered_pdstrn_not0$road_type, ref = "A3")
+```
+
+```{r}
+
+mean_value1 <- mean(grid_filtered_pdstrn_not0$pdstrn_, na.rm = TRUE)
+
+
+sd_value1 <- sd(grid_filtered_pdstrn_not0$pdstrn_, na.rm = TRUE)
+
+
+min_value1 <- min(grid_filtered_pdstrn_not0$pdstrn_, na.rm = TRUE)
+
+
+max_value1 <- max(grid_filtered_pdstrn_not0$pdstrn_, na.rm = TRUE)
+
+
+cat("Mean:", mean_value1, "\n")
+cat("Standard Deviation:", sd_value1, "\n")
+cat("Minimum:", min_value1, "\n")
+cat("Maximum:", max_value1, "\n")
+```
+
+```{r}
+ggplot(data = grid_with_road_type_casualty_no_cluster) +
+  geom_sf(aes(fill = pdstrn_)) +  
+  scale_fill_viridis_c() +  
+  theme_minimal() +  
+  labs(title = "Spatial Distribution of Total Pedestrian Casualties",
+       fill = "Total Pedestrian Casualties")  
+```
+
+
+
+```{r}
+
+mean_value11 <- mean(grid_filtered_pdstrn_not0$mx_c___, na.rm = TRUE)
+
+
+sd_value11 <- sd(grid_filtered_pdstrn_not0$mx_c___, na.rm = TRUE)
+
+
+min_value11 <- min(grid_filtered_pdstrn_not0$mx_c___, na.rm = TRUE)
+
+
+max_value11 <- max(grid_filtered_pdstrn_not0$mx_c___, na.rm = TRUE)
+
+
+cat("Mean:", mean_value11, "\n")
+cat("Standard Deviation:", sd_value11, "\n")
+cat("Minimum:", min_value11, "\n")
+cat("Maximum:", max_value11, "\n")
+```
+
+
+```{r}
+
+model_pdstrn <- glm(pdstrn_ ~ road_type + mx_c___, 
+             family = poisson(link = "log"), 
+             data = grid_filtered_pdstrn_not0)
+
+
+summary(model_pdstrn)
+```
+
+
+
+```{r}
+null_model <- glm(pdstrn_ ~ 1, family = poisson(link = "log"), data = grid_filtered_pdstrn_not0)
+pseudo_r2 <- 1 - (logLik(model_pdstrn) / logLik(null_model))
+cat("Pseudo R-squared: ", pseudo_r2, "\n")
+```
+
+
+
+```{r}
+library(MASS)
+```
+
+```{r}
+# Constructing a negative binomial regression model
+model_pdstrn_2 <- glm.nb(pdstrn_ ~ road_type + mx_c___ , 
+                       data = grid_filtered_pdstrn_not0)
+
+
+summary(model_pdstrn_2)
+```
+
+
+
+```{r}
+filtered_grid_all <- grid_with_road_type_casualty %>%
+  dplyr::filter(road_type %in% c("A1", "A5", "B4", "B5", "C5", "D4"))
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = road_lines_all_road, fill = NA, color = "blue", size = 0.01) +
+  geom_sf(data = london_boundary, fill = NA, color = "black", size = 0.5) +
+  geom_sf(data = filtered_grid_all, aes(fill = road_type), alpha = 0.6) +
+  labs(title = "Grid without Casualty",
+       fill = "Road Type") +
+  theme_minimal()
+london_greenland
+```
+
+```{r}
+
+ggplot() +
+  geom_sf(data = london_greenland, fill = NA, alpha = 0.6) +
+  geom_sf(data = london_boundary, fill = NA, color = "black", size = 0.5) +
+  geom_sf(data = filtered_grid_all, aes(fill = road_type), alpha = 0.6) +
+  labs(title = "Grid without Casualty",
+       fill = "Road Type") +
+  theme_minimal()
+
+```
+
+fatal
+```{r}
+summary_stats_fatal <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarise(total_fatal = sum(fatl_nm, na.rm = TRUE))
+```
+
+```{r}
+
+grid_filtered_fatal_not0 <- grid_with_road_type_casualty_no_cluster %>%
+  filter(!(road_type %in% c("A1", "A2", "A5", "B4", "B5", "C1", "C5", "D1", "D4")))
+```
+
+```{r}
+grid_filtered_fatal_not0$road_type <- factor(grid_filtered_fatal_not0$road_type)
+grid_filtered_fatal_not0$road_type <- relevel(grid_filtered_fatal_not0$road_type, ref = "A3")
+```
+
+```{r}
+mean_value2 <- mean(grid_filtered_fatal_not0$fatl_nm, na.rm = TRUE)
+
+
+sd_value2 <- sd(grid_filtered_fatal_not0$fatl_nm, na.rm = TRUE)
+
+
+min_value2 <- min(grid_filtered_fatal_not0$fatl_nm, na.rm = TRUE)
+
+max_value2 <- max(grid_filtered_fatal_not0$fatl_nm, na.rm = TRUE)
+
+
+cat("Mean:", mean_value2, "\n")
+cat("Standard Deviation:", sd_value2, "\n")
+cat("Minimum:", min_value2, "\n")
+cat("Maximum:", max_value2, "\n")
+```
+
+```{r}
+
+mean_value21 <- mean(grid_filtered_fatal_not0$mx_c___, na.rm = TRUE)
+
+
+sd_value21 <- sd(grid_filtered_fatal_not0$mx_c___, na.rm = TRUE)
+
+
+min_value21 <- min(grid_filtered_fatal_not0$mx_c___, na.rm = TRUE)
+
+
+max_value21 <- max(grid_filtered_fatal_not0$mx_c___, na.rm = TRUE)
+
+
+cat("Mean:", mean_value21, "\n")
+cat("Standard Deviation:", sd_value21, "\n")
+cat("Minimum:", min_value21, "\n")
+cat("Maximum:", max_value21, "\n")
+```
+
+```{r}
+ggplot(data = grid_with_road_type_casualty_no_cluster) +
+  geom_sf(aes(fill = fatl_nm)) +  
+  scale_fill_viridis_c() +  
+  theme_minimal() +  
+  labs(title = "Spatial Distribution of Fatal Pedestrian Casualties",
+       fill = "Fatal Pedestrian Casualties") 
+```
+
+```{r}
+
+model_fatal <- glm(fatl_nm ~ road_type + mx_c___, 
+             family = poisson(link = "log"), 
+             data = grid_filtered_fatal_not0)
+
+
+summary(model_fatal)
+```
+
+```{r}
+model_fatal_2 <- glm.nb(fatl_nm ~ road_type + mx_c___, 
+                       data = grid_filtered_fatal_not0)
+
+summary(model_fatal_2)
+```
+
+
+serious
+```{r}
+
+summary_stats_serious <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarise(total_serious = sum(sers_nm, na.rm = TRUE))
+```
+
+```{r}
+
+grid_filtered_serious_not0 <- grid_with_road_type_casualty_no_cluster %>%
+  filter(!(road_type %in% c("A1", "A5", "B4", "B5", "C5", "D4")))
+```
+
+```{r}
+
+grid_filtered_serious_not0$road_type <- factor(grid_filtered_serious_not0$road_type)
+grid_filtered_serious_not0$road_type <- relevel(grid_filtered_serious_not0$road_type, ref = "A3")
+```
+
+```{r}
+mean_value3 <- mean(grid_filtered_serious_not0$sers_nm, na.rm = TRUE)
+
+sd_value3 <- sd(grid_filtered_serious_not0$sers_nm, na.rm = TRUE)
+
+min_value3 <- min(grid_filtered_serious_not0$sers_nm, na.rm = TRUE)
+
+max_value3 <- max(grid_filtered_serious_not0$sers_nm, na.rm = TRUE)
+
+cat("Mean:", mean_value3, "\n")
+cat("Standard Deviation:", sd_value3, "\n")
+cat("Minimum:", min_value3, "\n")
+cat("Maximum:", max_value3, "\n")
+```
+
+```{r}
+mean_value31 <- mean(grid_filtered_serious_not0$mx_c___, na.rm = TRUE)
+
+sd_value31 <- sd(grid_filtered_serious_not0$mx_c___, na.rm = TRUE)
+
+min_value31 <- min(grid_filtered_serious_not0$mx_c___, na.rm = TRUE)
+
+max_value31 <- max(grid_filtered_serious_not0$mx_c___, na.rm = TRUE)
+
+cat("Mean:", mean_value31, "\n")
+cat("Standard Deviation:", sd_value31, "\n")
+cat("Minimum:", min_value31, "\n")
+cat("Maximum:", max_value31, "\n")
+```
+
+```{r}
+ggplot(data = grid_with_road_type_casualty_no_cluster) +
+  geom_sf(aes(fill = sers_nm)) +  
+  scale_fill_viridis_c() +  
+  theme_minimal() +  
+  labs(title = "Spatial Distribution of Serious Pedestrian Casualties",
+       fill = "Serious Pedestrian Casualties")  
+```
+
+
+
+```{r}
+model_serious <- glm(sers_nm ~ road_type + mx_c___, 
+             family = poisson(link = "log"), 
+             data = grid_filtered_serious_not0)
+
+summary(model_serious)
+```
+
+```{r}
+model_serious_2 <- glm.nb(sers_nm ~ road_type + mx_c___, 
+                       data = grid_filtered_serious_not0)
+
+summary(model_serious_2)
+```
+
+
+slight
+```{r}
+summary_stats_slight <- grid_with_road_type_casualty %>%
+  group_by(road_type) %>%
+  summarise(total_slight = sum(slght_n, na.rm = TRUE))
+```
+
+```{r}
+grid_filtered_slight_not0 <- grid_with_road_type_casualty_no_cluster %>%
+  filter(!(road_type %in% c("A1", "A5", "B4", "B5", "C1", "C5", "D4")))
+```
+
+```{r}
+grid_filtered_slight_not0$road_type <- factor(grid_filtered_slight_not0$road_type)
+grid_filtered_slight_not0$road_type <- relevel(grid_filtered_slight_not0$road_type, ref = "A3")
+```
+
+```{r}
+mean_value4 <- mean(grid_filtered_slight_not0$slght_n, na.rm = TRUE)
+
+sd_value4 <- sd(grid_filtered_slight_not0$slght_n, na.rm = TRUE)
+
+min_value4 <- min(grid_filtered_slight_not0$slght_n, na.rm = TRUE)
+
+max_value4 <- max(grid_filtered_slight_not0$slght_n, na.rm = TRUE)
+
+cat("Mean:", mean_value4, "\n")
+cat("Standard Deviation:", sd_value4, "\n")
+cat("Minimum:", min_value4, "\n")
+cat("Maximum:", max_value4, "\n")
+```
+
+```{r}
+mean_value41 <- mean(grid_filtered_slight_not0$mx_c___, na.rm = TRUE)
+
+sd_value41 <- sd(grid_filtered_slight_not0$mx_c___, na.rm = TRUE)
+
+min_value41 <- min(grid_filtered_slight_not0$mx_c___, na.rm = TRUE)
+
+max_value41 <- max(grid_filtered_slight_not0$mx_c___, na.rm = TRUE)
+
+cat("Mean:", mean_value41, "\n")
+cat("Standard Deviation:", sd_value41, "\n")
+cat("Minimum:", min_value41, "\n")
+cat("Maximum:", max_value41, "\n")
+```
+
+```{r}
+ggplot(data = grid_with_road_type_casualty_no_cluster) +
+  geom_sf(aes(fill = slght_n)) +  
+  scale_fill_viridis_c() +  
+  theme_minimal() +  
+  labs(title = "Spatial Distribution of Slight Pedestrian Casualties",
+       fill = "Slight Pedestrian Casualties")  
+```
+
+
+
+```{r}
+model_slight <- glm(slght_n ~ road_type + mx_c___, 
+             family = poisson(link = "log"), 
+             data = grid_filtered_slight_not0)
+
+summary(model_slight)
+```
+
+```{r}
+model_slight_2 <- glm.nb(slght_n ~ road_type + mx_c___, 
+                       data = grid_filtered_slight_not0)
+
+summary(model_slight_2)
+```
+
+```{r}
+data <- read.csv("D:/Dissertation/data/coefficient.csv")
+```
+
+```{r}
+str(data)
+```
+
+```{r}
+data$Coefficient.fatal <- as.numeric(as.character(data$Coefficient.fatal))
+```
+
+```{r}
+data_filtered <- data %>%
+  filter(!(Variable %in% c("Max Closeness Centrality", "Intercept")))
+```
+
+```{r}
+data_long <- pivot_longer(data_filtered, 
+                          cols = starts_with("Coefficient"), 
+                          names_to = "CoefficientType", 
+                          values_to = "Value")
+```
+
+
+
+```{r}
+ggplot(data_long, aes(x = Variable, y = Value, color = CoefficientType, group = CoefficientType)) +
+  geom_line(size = 1) +
+  labs(title = "Road Type Coefficients in Different Casualty Severity Models",
+       x = "Road Type",
+       y = "Coefficient",
+       color = "Coefficient in Different Models") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+data2 <- read.csv("D:/Dissertation/data/safety rank.csv")
+```
+
+```{r}
+str(data2)
+```
+
+```{r}
+data_long2 <- pivot_longer(data2, 
+                          cols = starts_with("Rank"), 
+                          names_to = "RankType", 
+                          values_to = "Value")
+```
+
+
+
+```{r}
+
+ggplot(data_long2, aes(x = Variable, y = Value, color = RankType, group = RankType)) +
+  geom_line(size = 1) +
+  labs(title = "Road Type Safety Rank Across Different Casualty Severity Levels",
+       x = "Road Type",
+       y = "Rank",
+       color = "Safety Rank Across Different Severity Levels") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+
+swap_letters_numbers <- function(s) {
+  
+  pattern <- "([a-zA-Z]+)(\\d+)"
+  result <- gsub(pattern, "\\1\\2", s)
+  
+  
+  gsub(pattern, "\\2\\1", result)
+}
+
+
+data_long2$Variable2 <- sapply(data_long2$Variable, swap_letters_numbers)
+```
+
+
+
+```{r}
+
+ggplot(data_long2, aes(x = Variable2, y = Value, color = RankType, group = RankType)) +
+  geom_line(size = 1) +
+  labs(title = "Road Type Safety Rank Across Different Casualty Severity Levels",
+       x = "Road Type",
+       y = "Rank",
+       color = "Safety Rank Across Different Severity Levels") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
